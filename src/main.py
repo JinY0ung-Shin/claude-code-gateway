@@ -585,17 +585,21 @@ async def generate_streaming_response(
                 assistant_message = Message(role="assistant", content=assistant_content)
                 session_manager.add_assistant_response(actual_session_id, assistant_message)
 
-        # Prepare usage data if requested
+        # Prepare usage data if requested (prefer real SDK values)
         usage_data = None
         if request.stream_options and request.stream_options.include_usage:
-            completion_text = assistant_content or ""
-            token_usage = claude_cli.estimate_token_usage(prompt, completion_text, request.model)
+            sdk_usage = streaming_utils.extract_sdk_usage(chunks_buffer)
+            if sdk_usage:
+                token_usage = sdk_usage
+            else:
+                completion_text = assistant_content or ""
+                token_usage = claude_cli.estimate_token_usage(prompt, completion_text, request.model)
             usage_data = Usage(
                 prompt_tokens=token_usage["prompt_tokens"],
                 completion_tokens=token_usage["completion_tokens"],
                 total_tokens=token_usage["total_tokens"],
             )
-            logger.debug(f"Estimated usage: {usage_data}")
+            logger.debug(f"Usage: {usage_data}")
 
         # Extract stop_reason from SDK messages and map to OpenAI finish_reason
         sdk_stop_reason = extract_stop_reason(chunks_buffer)
@@ -708,9 +712,14 @@ async def chat_completions(
                 assistant_message = Message(role="assistant", content=assistant_content)
                 session_manager.add_assistant_response(request_body.session_id, assistant_message)
 
-            # Estimate tokens (rough approximation)
-            prompt_tokens = MessageAdapter.estimate_tokens(prompt)
-            completion_tokens = MessageAdapter.estimate_tokens(assistant_content)
+            # Token usage (prefer real SDK values)
+            sdk_usage = streaming_utils.extract_sdk_usage(chunks)
+            if sdk_usage:
+                prompt_tokens = sdk_usage["prompt_tokens"]
+                completion_tokens = sdk_usage["completion_tokens"]
+            else:
+                prompt_tokens = MessageAdapter.estimate_tokens(prompt)
+                completion_tokens = MessageAdapter.estimate_tokens(assistant_content)
 
             # Extract stop_reason from SDK messages and map to OpenAI finish_reason
             sdk_stop_reason = extract_stop_reason(chunks)
@@ -816,9 +825,14 @@ async def anthropic_messages(
 
         assistant_content = raw_assistant_content
 
-        # Estimate tokens
-        prompt_tokens = MessageAdapter.estimate_tokens(prompt)
-        completion_tokens = MessageAdapter.estimate_tokens(assistant_content)
+        # Token usage (prefer real SDK values)
+        sdk_usage = streaming_utils.extract_sdk_usage(chunks)
+        if sdk_usage:
+            prompt_tokens = sdk_usage["prompt_tokens"]
+            completion_tokens = sdk_usage["completion_tokens"]
+        else:
+            prompt_tokens = MessageAdapter.estimate_tokens(prompt)
+            completion_tokens = MessageAdapter.estimate_tokens(assistant_content)
 
         # Extract stop_reason from SDK messages (use as-is for Anthropic format)
         sdk_stop_reason = extract_stop_reason(chunks)
@@ -1241,9 +1255,14 @@ async def create_response(
     # Commit turn counter on success
     session.turn_counter += 1
 
-    # Token estimation
-    prompt_tokens = MessageAdapter.estimate_tokens(prompt)
-    completion_tokens = MessageAdapter.estimate_tokens(assistant_text)
+    # Token usage (prefer real SDK values)
+    sdk_usage = streaming_utils.extract_sdk_usage(chunks)
+    if sdk_usage:
+        prompt_tokens = sdk_usage["prompt_tokens"]
+        completion_tokens = sdk_usage["completion_tokens"]
+    else:
+        prompt_tokens = MessageAdapter.estimate_tokens(prompt)
+        completion_tokens = MessageAdapter.estimate_tokens(assistant_text)
 
     # Build response object
     resp_id = _make_response_id(session_id, session.turn_counter)

@@ -122,13 +122,14 @@ class ClaudeCodeCLI:
 
         return options
 
-    _TYPE_MAP = {
-        StreamEvent: "stream_event",
-        AssistantMessage: "assistant",
-        ResultMessage: "result",
-        UserMessage: "user",
-        SystemMessage: "system",
-    }
+    # Order matters: subclasses before base classes for isinstance checks
+    _TYPE_CHECKS = [
+        (StreamEvent, "stream_event"),
+        (AssistantMessage, "assistant"),
+        (ResultMessage, "result"),
+        (UserMessage, "user"),
+        (SystemMessage, "system"),  # Must be last: TaskStarted/Progress/Notification are subclasses
+    ]
 
     def _convert_message(self, message) -> Dict[str, Any]:
         """Convert SDK message object to dict if needed."""
@@ -139,9 +140,10 @@ class ClaudeCodeCLI:
                 k: v for k, v in vars(message).items() if not k.startswith("_") and not callable(v)
             }
             if "type" not in result:
-                type_name = self._TYPE_MAP.get(type(message))
-                if type_name:
-                    result["type"] = type_name
+                for cls, type_name in self._TYPE_CHECKS:
+                    if isinstance(message, cls):
+                        result["type"] = type_name
+                        break
             return result
         return message
 

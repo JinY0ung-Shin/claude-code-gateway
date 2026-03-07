@@ -29,10 +29,10 @@ def cli_class():
 
 
 def _make_cli(cli_class):
-    """Create a minimal mock with _convert_message and _TYPE_MAP bound."""
+    """Create a minimal mock with _convert_message and _TYPE_CHECKS bound."""
     cli = MagicMock()
     cli._convert_message = cli_class._convert_message.__get__(cli, cli_class)
-    cli._TYPE_MAP = cli_class._TYPE_MAP
+    cli._TYPE_CHECKS = cli_class._TYPE_CHECKS
     return cli
 
 
@@ -749,7 +749,7 @@ class TestBuildSdkOptions:
 
 
 class TestConvertMessageTypeMap:
-    """Test _convert_message with SDK-type _TYPE_MAP injection."""
+    """Test _convert_message with SDK-type _TYPE_CHECKS injection."""
 
     def test_type_injected_for_stream_event(self, cli_class):
         """StreamEvent type is injected when missing from __dict__."""
@@ -792,13 +792,31 @@ class TestConvertMessageTypeMap:
         assert result["type"] == "custom_type"
 
     def test_unknown_object_no_type_injection(self, cli_class):
-        """Object not in _TYPE_MAP gets no type injected."""
+        """Object not in _TYPE_CHECKS gets no type injected."""
         cli = _make_cli(cli_class)
 
         obj = SimpleNamespace(foo="bar")
         result = cli._convert_message(obj)
         assert "type" not in result
         assert result["foo"] == "bar"
+
+    def test_system_message_subclass_gets_system_type(self, cli_class):
+        """TaskStartedMessage (SystemMessage subclass) gets type='system' via isinstance."""
+        from claude_agent_sdk.types import TaskStartedMessage
+
+        cli = _make_cli(cli_class)
+
+        obj = TaskStartedMessage.__new__(TaskStartedMessage)
+        obj.subtype = "task_started"
+        obj.data = {}
+        obj.task_id = "t1"
+        obj.description = "test task"
+        obj.uuid = "u1"
+        obj.session_id = "s1"
+
+        result = cli._convert_message(obj)
+        assert result.get("type") == "system"
+        assert result["subtype"] == "task_started"
 
 
 class TestConvertMessageEdgeCases:

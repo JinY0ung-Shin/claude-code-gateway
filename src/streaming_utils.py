@@ -15,6 +15,28 @@ from src.response_models import (
 )
 
 
+def extract_sdk_usage(chunks: list) -> Optional[Dict[str, int]]:
+    """Extract real token usage from SDK ResultMessage if available.
+
+    Returns dict with prompt_tokens, completion_tokens, total_tokens or None.
+    """
+    for msg in reversed(chunks):
+        if isinstance(msg, dict) and msg.get("type") == "result" and msg.get("usage"):
+            usage = msg["usage"]
+            input_tokens = (
+                usage.get("input_tokens", 0)
+                + usage.get("cache_creation_input_tokens", 0)
+                + usage.get("cache_read_input_tokens", 0)
+            )
+            output_tokens = usage.get("output_tokens", 0)
+            return {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            }
+    return None
+
+
 def map_stop_reason(stop_reason: Optional[str] = None) -> str:
     """Map Claude SDK stop_reason to OpenAI finish_reason."""
     if stop_reason == "max_tokens":
@@ -152,6 +174,41 @@ async def stream_chunks(
         return [make_sse(request_id, request.model, {"content": text})]
 
     async for chunk in chunk_source:
+        # Handle AssistantMessage.error (auth failures, rate limits, etc.)
+        if chunk.get("type") == "assistant" and chunk.get("error"):
+            chunks_buffer.append(chunk)
+            error_type = chunk["error"]
+            error_text = f"\n\n[Error: {error_type}]\n"
+            for sse in _emit_sse(error_text):
+                yield sse
+            content_sent = True
+            continue
+
+        # Handle task system messages (subagent progress — out-of-band, not "content")
+        if chunk.get("type") == "system":
+            subtype = chunk.get("subtype")
+            if subtype == "task_started":
+                desc = chunk.get("description", "")
+                for sse in _emit_sse(f"\n\n> **Task started**: {desc}\n"):
+                    yield sse
+            elif subtype == "task_progress":
+                desc = chunk.get("description", "")
+                last_tool = chunk.get("last_tool_name", "")
+                usage = chunk.get("usage", {})
+                tool_uses = usage.get("tool_uses", 0)
+                progress_text = f"\n> **Task progress**: {desc}"
+                if last_tool:
+                    progress_text += f" (tool: {last_tool}, uses: {tool_uses})"
+                progress_text += "\n"
+                for sse in _emit_sse(progress_text):
+                    yield sse
+            elif subtype == "task_notification":
+                status = chunk.get("status", "")
+                summary = chunk.get("summary", "")
+                for sse in _emit_sse(f"\n> **Task {status}**: {summary}\n\n"):
+                    yield sse
+            continue
+
         text_delta, in_thinking = extract_stream_event_delta(chunk, in_thinking)
         if text_delta is not None:
             token_streaming = True
@@ -368,6 +425,37 @@ async def stream_response_chunks(
                 yield _make_failed_event("sdk_error", error_msg)
                 return
 
+            # Handle AssistantMessage.error (auth failures, rate limits, etc.)
+            if chunk.get("type") == "assistant" and chunk.get("error"):
+                chunks_buffer.append(chunk)
+                error_type = chunk["error"]
+                logger.error("Responses stream: assistant error: %s", error_type)
+                stream_result["success"] = False
+                yield _make_failed_event(error_type, f"Claude error: {error_type}")
+                return
+
+            # Handle task system messages (subagent progress)
+            if chunk.get("type") == "system":
+                subtype = chunk.get("subtype")
+                if subtype == "task_started":
+                    desc = chunk.get("description", "")
+                    yield _emit_delta(f"\n\n> **Task started**: {desc}\n")
+                elif subtype == "task_progress":
+                    desc = chunk.get("description", "")
+                    last_tool = chunk.get("last_tool_name", "")
+                    usage = chunk.get("usage", {})
+                    tool_uses = usage.get("tool_uses", 0)
+                    delta_text = f"\n> **Task progress**: {desc}"
+                    if last_tool:
+                        delta_text += f" (tool: {last_tool}, uses: {tool_uses})"
+                    delta_text += "\n"
+                    yield _emit_delta(delta_text)
+                elif subtype == "task_notification":
+                    status = chunk.get("status", "")
+                    summary = chunk.get("summary", "")
+                    yield _emit_delta(f"\n> **Task {status}**: {summary}\n\n")
+                continue
+
             was_thinking = in_thinking
             text_delta, in_thinking = extract_stream_event_delta(chunk, in_thinking)
             if text_delta is not None:
@@ -516,9 +604,14 @@ async def stream_response_chunks(
         sequence_number=_next_seq(),
     )
 
-    # response.completed (with usage)
-    prompt_tokens = MessageAdapter.estimate_tokens(prompt_text) if prompt_text else 0
-    completion_tokens = MessageAdapter.estimate_tokens(final_text)
+    # response.completed (with usage — prefer real SDK values)
+    sdk_usage = extract_sdk_usage(chunks_buffer)
+    if sdk_usage:
+        prompt_tokens = sdk_usage["prompt_tokens"]
+        completion_tokens = sdk_usage["completion_tokens"]
+    else:
+        prompt_tokens = MessageAdapter.estimate_tokens(prompt_text) if prompt_text else 0
+        completion_tokens = MessageAdapter.estimate_tokens(final_text)
     final_resp = ResponseObject(
         id=response_id,
         model=model,

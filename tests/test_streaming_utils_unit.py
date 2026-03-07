@@ -10,7 +10,7 @@ import pytest
 
 from src.models import ChatCompletionRequest, Message
 from src.response_models import OutputItem, ResponseObject
-from src.streaming_utils import make_response_sse, stream_chunks, stream_response_chunks
+from src.streaming_utils import extract_sdk_usage, make_response_sse, stream_chunks, stream_response_chunks
 
 
 def _parse_chat_sse(line: str) -> dict:
@@ -471,3 +471,159 @@ async def test_stream_response_chunks_warns_on_incomplete_tool_use_and_still_com
     assert parsed[-1][0] == "response.completed"
     assert stream_result["success"] is True
     assert "Incomplete tool_use blocks" in caplog.text
+
+
+# ==================== New tests for error/task/usage handling ====================
+
+
+class TestExtractSdkUsage:
+    def test_returns_none_when_no_result(self):
+        assert extract_sdk_usage([{"type": "assistant"}]) is None
+
+    def test_returns_none_when_usage_missing(self):
+        assert extract_sdk_usage([{"type": "result", "subtype": "success"}]) is None
+
+    def test_extracts_basic_usage(self):
+        chunks = [{"type": "result", "usage": {"input_tokens": 100, "output_tokens": 50}}]
+        result = extract_sdk_usage(chunks)
+        assert result == {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+
+    def test_includes_cache_tokens_in_prompt(self):
+        chunks = [
+            {
+                "type": "result",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cache_creation_input_tokens": 200,
+                    "cache_read_input_tokens": 300,
+                },
+            }
+        ]
+        result = extract_sdk_usage(chunks)
+        assert result["prompt_tokens"] == 600  # 100 + 200 + 300
+        assert result["completion_tokens"] == 50
+        assert result["total_tokens"] == 650
+
+    def test_picks_last_result_message(self):
+        chunks = [
+            {"type": "result", "usage": {"input_tokens": 10, "output_tokens": 5}},
+            {"type": "assistant"},
+            {"type": "result", "usage": {"input_tokens": 99, "output_tokens": 88}},
+        ]
+        result = extract_sdk_usage(chunks)
+        assert result["prompt_tokens"] == 99
+        assert result["completion_tokens"] == 88
+
+
+@pytest.mark.asyncio
+async def test_stream_chunks_emits_assistant_error():
+    """AssistantMessage with error field emits error text and buffers the chunk."""
+
+    async def error_source():
+        yield {"type": "assistant", "error": "rate_limit", "content": []}
+
+    request = ChatCompletionRequest(
+        model="claude-test",
+        messages=[Message(role="user", content="Hi")],
+        stream=True,
+    )
+    chunks_buffer = []
+    lines = [
+        line
+        async for line in stream_chunks(
+            error_source(), request, "req-error", chunks_buffer, logging.getLogger("test-error")
+        )
+    ]
+
+    # Should have role + error text + fallback finish
+    all_content = "".join(lines)
+    assert "[Error: rate_limit]" in all_content
+    # Error chunk should be buffered
+    assert any(c.get("error") == "rate_limit" for c in chunks_buffer)
+
+
+@pytest.mark.asyncio
+async def test_stream_chunks_task_messages_dont_count_as_content():
+    """Task system messages are rendered but don't set content_sent."""
+
+    async def task_only_source():
+        yield {"type": "system", "subtype": "task_started", "description": "Analyzing code"}
+        yield {"type": "system", "subtype": "task_progress", "description": "Reading files", "last_tool_name": "Read", "usage": {"tool_uses": 3}}
+        yield {"type": "system", "subtype": "task_notification", "status": "completed", "summary": "Done"}
+
+    request = ChatCompletionRequest(
+        model="claude-test",
+        messages=[Message(role="user", content="Hi")],
+        stream=True,
+    )
+    lines = [
+        line
+        async for line in stream_chunks(
+            task_only_source(), request, "req-task", [], logging.getLogger("test-task")
+        )
+    ]
+
+    all_content = "".join(lines)
+    assert "Task started" in all_content
+    assert "Task progress" in all_content
+    assert "Task completed" in all_content
+    # Since no real content, fallback "unable to provide" should appear
+    assert "unable to provide a response" in all_content
+
+
+@pytest.mark.asyncio
+async def test_stream_response_chunks_assistant_error_emits_failed():
+    """AssistantMessage.error triggers response.failed in Responses API."""
+
+    async def error_source():
+        yield {"type": "assistant", "error": "authentication_failed", "content": []}
+
+    chunks_buffer = []
+    stream_result = {}
+    lines = [
+        line
+        async for line in stream_response_chunks(
+            chunk_source=error_source(),
+            model="claude-test",
+            response_id="resp-err",
+            output_item_id="msg-err",
+            chunks_buffer=chunks_buffer,
+            logger=logging.getLogger("test-resp-error"),
+            stream_result=stream_result,
+        )
+    ]
+    parsed = [_parse_response_sse(line) for line in lines]
+    assert parsed[-1][0] == "response.failed"
+    assert parsed[-1][1]["response"]["error"]["code"] == "authentication_failed"
+    assert stream_result["success"] is False
+    # Error chunk should be in buffer
+    assert any(c.get("error") == "authentication_failed" for c in chunks_buffer)
+
+
+@pytest.mark.asyncio
+async def test_stream_response_chunks_task_only_emits_failed():
+    """Task-only stream (no real assistant content) should still fail with empty_response."""
+
+    async def task_only_source():
+        yield {"type": "system", "subtype": "task_started", "description": "Working"}
+        yield {"type": "system", "subtype": "task_notification", "status": "completed", "summary": "Done"}
+
+    stream_result = {}
+    lines = [
+        line
+        async for line in stream_response_chunks(
+            chunk_source=task_only_source(),
+            model="claude-test",
+            response_id="resp-task-only",
+            output_item_id="msg-task-only",
+            chunks_buffer=[],
+            logger=logging.getLogger("test-resp-task-only"),
+            stream_result=stream_result,
+        )
+    ]
+    parsed = [_parse_response_sse(line) for line in lines]
+    # Task-only stream should NOT complete successfully
+    assert parsed[-1][0] == "response.failed"
+    assert parsed[-1][1]["response"]["error"]["code"] == "empty_response"
+    assert stream_result["success"] is False
