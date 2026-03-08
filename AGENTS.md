@@ -20,7 +20,9 @@ This repository is a FastAPI gateway for the Claude Agent SDK. It exposes three 
 
 ## Working Rules
 - Keep new runtime code in `src/` and preserve the existing module boundaries instead of moving logic into `src/main.py`.
+- Keep validation and API-compatibility logic out of the main entrypoint and in dedicated modules.
 - Keep message-format translation in `src/message_adapter.py`, SDK interaction in `src/claude_cli.py`, and SSE shaping in `src/streaming_utils.py`.
+- Preserve response-shape and streaming semantics across the compatible API surfaces.
 - Put new shared defaults in `src/constants.py`; when config behavior changes, also update `.env.example` and `README.md`.
 - Do not import from `src/` inside `open_webui_pipe.py`; it communicates with the gateway over HTTP only.
 - Preserve the distinction between chat-session history in `src/session_manager.py` and `previous_response_id` chaining in `/v1/responses`.
@@ -59,6 +61,8 @@ This repository is a FastAPI gateway for the Claude Agent SDK. It exposes three 
 
 ## Security
 - Keep secrets only in local `.env` files or environment variables; never commit API keys or Claude auth tokens.
+- Do not log secrets, tokens, API keys, raw authorization headers, or other credential-bearing material.
+- Treat `MCP_CONFIG` as sensitive executable configuration that affects runtime execution context.
 - Validate changes involving `ANTHROPIC_AUTH_TOKEN`, `API_KEY`, `CLAUDE_CWD`, and `MCP_CONFIG` in both local and containerized setups.
 
 ## References
