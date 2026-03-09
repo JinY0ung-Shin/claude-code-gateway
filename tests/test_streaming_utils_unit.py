@@ -11,6 +11,7 @@ import pytest
 from src.models import ChatCompletionRequest, Message
 from src.response_models import OutputItem, ResponseObject
 from src.streaming_utils import (
+    CollabJsonStreamFilter,
     ToolUseAccumulator,
     extract_embedded_tool_blocks,
     extract_sdk_usage,
@@ -21,6 +22,7 @@ from src.streaming_utils import (
     map_stop_reason,
     stream_chunks,
     stream_response_chunks,
+    strip_collab_json,
 )
 
 
@@ -1094,3 +1096,153 @@ async def test_stream_response_chunks_emits_embedded_tool_blocks_as_structured_s
 
     assert stream_result["success"] is True
     assert parsed[-1][0] == "response.completed"
+
+
+# ---------------------------------------------------------------------------
+# strip_collab_json tests
+# ---------------------------------------------------------------------------
+
+
+class TestStripCollabJson:
+    """Tests for the strip_collab_json utility."""
+
+    def test_no_collab_returns_unchanged(self):
+        text = "Hello world. Normal text here."
+        assert strip_collab_json(text) == text
+
+    def test_strips_single_collab_block(self):
+        collab = json.dumps({"collab_tool_call": {"type": "spawn_agent", "prompt": "hi"}})
+        text = f"Before{collab}After"
+        assert strip_collab_json(text) == "BeforeAfter"
+
+    def test_strips_multiple_collab_blocks(self):
+        c1 = json.dumps({"collab_tool_call": {"type": "spawn_agent", "prompt": "a"}})
+        c2 = json.dumps({"collab_tool_call": {"type": "wait", "agents_states": {}}})
+        text = f"Start\n{c1}\nMiddle\n{c2}\nEnd"
+        result = strip_collab_json(text)
+        assert "collab_tool_call" not in result
+        assert "Start" in result
+        assert "Middle" in result
+        assert "End" in result
+
+    def test_preserves_non_collab_json(self):
+        text = 'Use {"key": "value"} in your config.'
+        assert strip_collab_json(text) == text
+
+    def test_handles_braces_in_json_strings(self):
+        collab = json.dumps({
+            "collab_tool_call": {"type": "wait", "agents_states": {"t1": {"message": "Found {3} files"}}}
+        })
+        text = f"Result: {collab} done."
+        result = strip_collab_json(text)
+        assert "collab_tool_call" not in result
+        assert "Result:" in result
+        assert "done." in result
+
+    def test_empty_string(self):
+        assert strip_collab_json("") == ""
+
+
+# ---------------------------------------------------------------------------
+# CollabJsonStreamFilter tests
+# ---------------------------------------------------------------------------
+
+
+class TestCollabJsonStreamFilter:
+    """Tests for the streaming collab JSON filter."""
+
+    def test_plain_text_passes_through(self):
+        f = CollabJsonStreamFilter()
+        assert f.feed("Hello world") == "Hello world"
+        assert f.flush() == ""
+
+    def test_filters_collab_json_in_single_delta(self):
+        collab = json.dumps({"collab_tool_call": {"type": "spawn_agent"}})
+        f = CollabJsonStreamFilter()
+        result = f.feed(f"Before{collab}After")
+        assert "collab_tool_call" not in result
+        assert "Before" in result
+        assert "After" in result
+
+    def test_filters_collab_json_split_across_deltas(self):
+        collab = json.dumps({"collab_tool_call": {"type": "spawn_agent", "prompt": "test"}})
+        f = CollabJsonStreamFilter()
+        output_parts = []
+        # Split the collab JSON across character-by-character deltas
+        full_text = f"Hello {collab} World"
+        for ch in full_text:
+            out = f.feed(ch)
+            if out:
+                output_parts.append(out)
+        remaining = f.flush()
+        if remaining:
+            output_parts.append(remaining)
+        result = "".join(output_parts)
+        assert "collab_tool_call" not in result
+        assert "Hello" in result
+        assert "World" in result
+
+    def test_non_collab_json_passes_through(self):
+        f = CollabJsonStreamFilter()
+        result = f.feed('Use {"key": "val"} here')
+        result += f.flush()
+        assert '{"key": "val"}' in result
+
+    def test_buffering_property(self):
+        f = CollabJsonStreamFilter()
+        assert not f.buffering
+        f.feed("{")
+        assert f.buffering
+        f.flush()
+        assert not f.buffering
+
+    def test_flush_returns_buffered_text(self):
+        f = CollabJsonStreamFilter()
+        f.feed("{incomplete")
+        remaining = f.flush()
+        assert remaining == "{incomplete"
+
+
+# ---------------------------------------------------------------------------
+# stream_response_chunks collab filtering test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_response_chunks_strips_collab_from_token_deltas():
+    """Token-level text deltas containing collab_tool_call JSON should be stripped."""
+    collab = json.dumps({"collab_tool_call": {"type": "spawn_agent", "prompt": "test"}})
+    full_text = f"Hello {collab} World"
+
+    async def source():
+        # Simulate token-level streaming with collab JSON in text deltas
+        for ch in full_text:
+            yield {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": ch},
+                },
+            }
+
+    chunks_buffer = []
+    stream_result = {}
+    lines = [
+        line
+        async for line in stream_response_chunks(
+            chunk_source=source(),
+            model="test-model",
+            response_id="resp-collab-strip",
+            output_item_id="msg-collab-strip",
+            chunks_buffer=chunks_buffer,
+            logger=logging.getLogger("test-collab-strip"),
+            stream_result=stream_result,
+        )
+    ]
+    parsed = [_parse_response_sse(line) for line in lines]
+    deltas = [p.get("delta", "") for et, p in parsed if et == "response.output_text.delta"]
+    combined = "".join(d for d in deltas if isinstance(d, str))
+    assert "collab_tool_call" not in combined
+    assert "Hello" in combined
+    assert "World" in combined
+    assert stream_result["success"] is True

@@ -1500,6 +1500,10 @@ async def create_response(
 
     # Resolve model → backend and validate auth
     resolved, backend = _resolve_and_get_backend(body.model)
+    logger.info(
+        "Responses API: model=%s → backend=%s (provider_model=%s)",
+        body.model, resolved.backend, resolved.provider_model,
+    )
     _validate_backend_auth(resolved.backend)
 
     # Validate: instructions + previous_response_id is not allowed

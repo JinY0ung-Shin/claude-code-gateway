@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from typing import Any, AsyncGenerator, Dict, Optional
 
@@ -97,6 +98,142 @@ def _filter_tool_blocks(content):
     """
     _, non_tool = _extract_tool_blocks(content)
     return non_tool or None
+
+
+def strip_collab_json(text: str) -> str:
+    """Remove collab_tool_call JSON blocks from text content.
+
+    Uses a string-aware brace counter identical to the one in codex_cli so
+    that braces inside JSON string values are not misinterpreted.
+    """
+    plain_parts: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "{":
+            depth = 0
+            j = i
+            in_string = False
+            escape_next = False
+            while j < len(text):
+                ch = text[j]
+                if escape_next:
+                    escape_next = False
+                elif ch == "\\" and in_string:
+                    escape_next = True
+                elif ch == '"':
+                    in_string = not in_string
+                elif not in_string:
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                j += 1
+            block = text[i : j + 1] if j < len(text) else text[i:]
+            if "collab_tool_call" in block:
+                try:
+                    json.loads(block)
+                    # Valid collab JSON — strip it
+                    i = j + 1
+                    continue
+                except json.JSONDecodeError:
+                    pass
+            plain_parts.append(block)
+            i = j + 1
+            continue
+        plain_parts.append(text[i])
+        i += 1
+    cleaned = "".join(plain_parts)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+class CollabJsonStreamFilter:
+    """Streaming filter that strips collab_tool_call JSON from text deltas.
+
+    Token-level streaming delivers text character by character across many
+    deltas.  When a ``{`` is encountered, this filter buffers subsequent
+    characters until it can determine whether the block is a collab_tool_call
+    JSON object.  Non-collab content is flushed with minimal delay.
+    """
+
+    _COLLAB_MARKER = '"collab_tool_call"'
+    _MARKER_CHECK_LEN = 25  # enough to see {"collab_tool_call"
+    _MAX_BUFFER = 8192
+
+    def __init__(self):
+        self._buf = ""
+        self._depth = 0
+        self._in_string = False
+        self._escape_next = False
+
+    @property
+    def buffering(self) -> bool:
+        return bool(self._buf)
+
+    def feed(self, text: str) -> str:
+        """Process a text delta, returning cleaned text (collab JSON removed)."""
+        output: list[str] = []
+
+        for ch in text:
+            if self._buf:
+                self._buf += ch
+                if self._escape_next:
+                    self._escape_next = False
+                elif ch == "\\" and self._in_string:
+                    self._escape_next = True
+                elif ch == '"':
+                    self._in_string = not self._in_string
+                elif not self._in_string:
+                    if ch == "{":
+                        self._depth += 1
+                    elif ch == "}":
+                        self._depth -= 1
+                        if self._depth == 0:
+                            if self._COLLAB_MARKER in self._buf:
+                                try:
+                                    json.loads(self._buf)
+                                    # Valid collab — drop it
+                                    self._reset()
+                                    continue
+                                except json.JSONDecodeError:
+                                    pass
+                            output.append(self._buf)
+                            self._reset()
+                            continue
+                # Not-collab early bail after enough chars
+                if (
+                    len(self._buf) > self._MARKER_CHECK_LEN
+                    and self._COLLAB_MARKER not in self._buf
+                ):
+                    output.append(self._buf)
+                    self._reset()
+                elif len(self._buf) > self._MAX_BUFFER:
+                    output.append(self._buf)
+                    self._reset()
+            else:
+                if ch == "{":
+                    self._buf = ch
+                    self._depth = 1
+                    self._in_string = False
+                    self._escape_next = False
+                else:
+                    output.append(ch)
+
+        return "".join(output)
+
+    def flush(self) -> str:
+        """Return any remaining buffered text at stream end."""
+        result = self._buf
+        self._reset()
+        return result
+
+    def _reset(self):
+        self._buf = ""
+        self._depth = 0
+        self._in_string = False
+        self._escape_next = False
 
 
 def process_chunk_content(chunk: Dict[str, Any], content_sent: bool = False):
@@ -459,6 +596,7 @@ def extract_user_tool_results(chunk: Dict[str, Any]) -> tuple[list, Optional[str
 def format_chunk_content(chunk: Dict[str, Any], content_sent: bool) -> Optional[str]:
     """Extract content from a chunk and format as a single text string.
 
+    Strips any embedded collab_tool_call JSON before returning.
     Returns non-empty, non-whitespace text or None.
     """
     content = process_chunk_content(chunk, content_sent=content_sent)
@@ -467,9 +605,11 @@ def format_chunk_content(chunk: Dict[str, Any], content_sent: bool) -> Optional[
     if isinstance(content, list):
         formatted = MessageAdapter.format_blocks(content)
         if formatted and not formatted.isspace():
-            return formatted
+            formatted = strip_collab_json(formatted)
+            return formatted if formatted else None
     elif isinstance(content, str) and content and not content.isspace():
-        return content
+        content = strip_collab_json(content)
+        return content if content else None
     return None
 
 
@@ -491,6 +631,7 @@ async def stream_chunks(
     token_streaming = False
     in_thinking = False
     tool_acc = ToolUseAccumulator()
+    collab_filter = CollabJsonStreamFilter()
 
     def _emit_sse(text: str):
         nonlocal role_sent
@@ -523,9 +664,11 @@ async def stream_chunks(
         if text_delta is not None:
             token_streaming = True
             if text_delta:
-                for sse in _emit_sse(text_delta):
-                    yield sse
-                content_sent = True
+                cleaned = collab_filter.feed(text_delta)
+                if cleaned:
+                    for sse in _emit_sse(cleaned):
+                        yield sse
+                    content_sent = True
             elif not role_sent:
                 yield make_sse(request_id, request.model, {"role": "assistant", "content": ""})
                 role_sent = True
@@ -573,6 +716,13 @@ async def stream_chunks(
             for sse in _emit_sse(text):
                 yield sse
             content_sent = True
+
+    # Flush any remaining buffered text from the collab filter
+    remaining = collab_filter.flush()
+    if remaining:
+        for sse in _emit_sse(remaining):
+            yield sse
+        content_sent = True
 
     if tool_acc.has_incomplete:
         logger.warning("Incomplete tool_use blocks at stream end: %s", tool_acc.incomplete_keys)
@@ -624,6 +774,7 @@ async def stream_response_chunks(
     token_streaming = False
     in_thinking = False
     tool_acc = ToolUseAccumulator()
+    collab_filter = CollabJsonStreamFilter()
     full_text = []
     seq = 0
     _metadata = metadata or {}
@@ -731,9 +882,11 @@ async def stream_response_chunks(
                 if was_thinking or in_thinking or text_delta in ("<think>", "</think>"):
                     continue
                 if text_delta:
-                    yield _emit_delta(text_delta)
-                    full_text.append(text_delta)
-                    content_sent = True
+                    cleaned = collab_filter.feed(text_delta)
+                    if cleaned:
+                        yield _emit_delta(cleaned)
+                        full_text.append(cleaned)
+                        content_sent = True
                 continue
 
             # Accumulate tool_use blocks from stream events
@@ -796,6 +949,13 @@ async def stream_response_chunks(
         stream_result["success"] = False
         yield _make_failed_event("server_error", "Internal server error")
         return
+
+    # Flush any remaining buffered text from the collab filter
+    remaining = collab_filter.flush()
+    if remaining:
+        yield _emit_delta(remaining)
+        full_text.append(remaining)
+        content_sent = True
 
     if tool_acc.has_incomplete:
         logger.warning("Incomplete tool_use blocks at stream end: %s", tool_acc.incomplete_keys)
