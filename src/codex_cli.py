@@ -58,7 +58,9 @@ def _extract_text_and_collab(text: str) -> tuple[str, list[Dict[str, Any]]]:
     """Split agent_message text into plain text and collab_tool_call JSON objects.
 
     Returns (cleaned_text, list_of_parsed_collab_dicts).
-    Uses brace-counting to handle arbitrarily nested JSON objects.
+    Uses string-aware brace-counting so that ``{`` / ``}`` inside JSON
+    string values (e.g. ``"message": "Found {3} files"``) do not confuse
+    the depth tracker.
     """
     import re
 
@@ -67,15 +69,26 @@ def _extract_text_and_collab(text: str) -> tuple[str, list[Dict[str, Any]]]:
     i = 0
     while i < len(text):
         if text[i] == "{":
+            # String-aware brace counter
             depth = 0
             j = i
+            in_string = False
+            escape_next = False
             while j < len(text):
-                if text[j] == "{":
-                    depth += 1
-                elif text[j] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        break
+                ch = text[j]
+                if escape_next:
+                    escape_next = False
+                elif ch == "\\" and in_string:
+                    escape_next = True
+                elif ch == '"':
+                    in_string = not in_string
+                elif not in_string:
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            break
                 j += 1
             block = text[i : j + 1] if j < len(text) else text[i:]
             if "collab_tool_call" in block:
@@ -325,6 +338,15 @@ def normalize_codex_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "is_error": True,
             "error_message": event.get("message", "Codex stream error"),
         }
+
+    # --- collab_tool_call: collaborative agent orchestration event ---
+    # Codex may emit these as standalone JSONL events (not just embedded in
+    # agent_message text).  Convert to tool_use/tool_result blocks.
+    if event_type == "collab_tool_call":
+        blocks = _collab_to_tool_blocks([event])
+        if blocks:
+            return {"type": "assistant", "content": blocks}
+        return None
 
     # Unrecognized event — log and skip
     logger.debug("Unrecognized Codex event type: %s", event_type)

@@ -20,6 +20,7 @@ from src.codex_cli import (
     CodexCLI,
     normalize_codex_event,
     _build_content_blocks,
+    _extract_text_and_collab,
     _normalize_usage,
 )
 
@@ -862,3 +863,122 @@ class TestVerify:
             mock_exec.return_value = mock_proc
 
             assert await codex_cli.verify() is False
+
+
+# ---------------------------------------------------------------------------
+# String-aware brace-counting parser
+# ---------------------------------------------------------------------------
+
+
+class TestExtractTextAndCollab:
+    def test_basic_collab_extraction(self):
+        text = 'Hello{"id":"1","type":"collab_tool_call","tool":"spawn_agent","prompt":"do stuff","agents_states":{},"status":"completed"}World'
+        cleaned, events = _extract_text_and_collab(text)
+        assert cleaned == "HelloWorld"
+        assert len(events) == 1
+        assert events[0]["tool"] == "spawn_agent"
+
+    def test_braces_inside_json_string_values(self):
+        """Braces inside JSON string values must not break the parser."""
+        collab = json.dumps(
+            {
+                "id": "item_44",
+                "type": "collab_tool_call",
+                "tool": "wait",
+                "agents_states": {
+                    "thread-1": {
+                        "status": "completed",
+                        "message": "Found {3} files in src/ and fixed }bugs{",
+                    }
+                },
+                "status": "completed",
+            }
+        )
+        text = f"Before{collab}After"
+        cleaned, events = _extract_text_and_collab(text)
+        assert cleaned == "BeforeAfter"
+        assert len(events) == 1
+        assert events[0]["tool"] == "wait"
+        assert "{3}" in events[0]["agents_states"]["thread-1"]["message"]
+
+    def test_unbalanced_braces_in_string(self):
+        """Unbalanced braces inside a string value should be handled."""
+        collab = json.dumps(
+            {
+                "type": "collab_tool_call",
+                "tool": "wait",
+                "agents_states": {
+                    "t1": {"status": "completed", "message": "The { is unclosed here"}
+                },
+                "status": "completed",
+            }
+        )
+        text = f"Start {collab} End"
+        cleaned, events = _extract_text_and_collab(text)
+        assert "collab_tool_call" not in cleaned
+        assert len(events) == 1
+
+    def test_no_collab_events(self):
+        text = "Just regular text with {some braces} inside"
+        cleaned, events = _extract_text_and_collab(text)
+        assert events == []
+        assert "regular text" in cleaned
+
+    def test_multiple_collab_events(self):
+        spawn = json.dumps({"type": "collab_tool_call", "tool": "spawn_agent", "prompt": "go"})
+        wait = json.dumps(
+            {
+                "type": "collab_tool_call",
+                "tool": "wait",
+                "agents_states": {"t1": {"status": "completed", "message": "done"}},
+            }
+        )
+        text = f"Text1\n{spawn}\nText2\n{wait}\nText3"
+        cleaned, events = _extract_text_and_collab(text)
+        assert len(events) == 2
+        assert events[0]["tool"] == "spawn_agent"
+        assert events[1]["tool"] == "wait"
+        assert "Text1" in cleaned
+        assert "Text2" in cleaned
+        assert "Text3" in cleaned
+
+
+class TestNormalizeCollabToolCallEvent:
+    """Test top-level collab_tool_call JSONL events handled by normalize_codex_event."""
+
+    def test_spawn_agent_event(self):
+        event = {
+            "type": "collab_tool_call",
+            "tool": "spawn_agent",
+            "prompt": "Explore the codebase",
+            "receiver_thread_ids": ["t1"],
+            "agents_states": {},
+        }
+        result = normalize_codex_event(event)
+        assert result is not None
+        assert result["type"] == "assistant"
+        blocks = result["content"]
+        assert any(b["type"] == "tool_use" and b["name"] == "Agent" for b in blocks)
+
+    def test_wait_completed_event(self):
+        event = {
+            "type": "collab_tool_call",
+            "tool": "wait",
+            "agents_states": {
+                "t1": {"status": "completed", "message": "Found 5 files"},
+            },
+        }
+        result = normalize_codex_event(event)
+        assert result is not None
+        blocks = result["content"]
+        assert any(b["type"] == "tool_result" for b in blocks)
+
+    def test_close_agent_returns_none(self):
+        event = {
+            "type": "collab_tool_call",
+            "tool": "close_agent",
+            "agents_states": {},
+        }
+        result = normalize_codex_event(event)
+        # close_agent produces no blocks → None
+        assert result is None
