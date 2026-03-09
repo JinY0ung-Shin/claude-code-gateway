@@ -197,6 +197,7 @@ class TestMessageAdapterFormatBlocks:
 
     def setup_method(self):
         from src.message_adapter import MessageAdapter
+
         self.adapter = MessageAdapter
 
     def test_format_block_text_string(self):
@@ -294,6 +295,7 @@ class TestMessageAdapterMessagesToPrompt:
     def setup_method(self):
         from src.message_adapter import MessageAdapter
         from src.models import Message
+
         self.adapter = MessageAdapter
         self.Message = Message
 
@@ -353,6 +355,7 @@ class TestChatCompletionRequestToClaudeOptions:
 
     def setup_method(self):
         from src.models import ChatCompletionRequest
+
         self.Request = ChatCompletionRequest
 
     def test_basic_model_passthrough(self):

@@ -7,6 +7,7 @@ import pytest
 
 from src.constants import DEFAULT_MODEL
 
+
 class TestAnthropicMessagesModels:
     """Test Anthropic API model classes."""
 

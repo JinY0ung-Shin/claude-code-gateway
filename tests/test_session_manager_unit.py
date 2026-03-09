@@ -470,6 +470,7 @@ class TestSessionCustomTtl:
         session = Session(session_id="short-lived", ttl_minutes=10)
 
         import time
+
         time.sleep(0.01)
         session.touch()
 
@@ -543,27 +544,21 @@ class TestProcessMessagesEdgeCases:
         sid = "multi-round"
 
         # Round 1
-        r1, _ = manager.process_messages(
-            [Message(role="user", content="Round 1")], session_id=sid
-        )
+        r1, _ = manager.process_messages([Message(role="user", content="Round 1")], session_id=sid)
         assert len(r1) == 1
 
         # Add assistant response
         manager.add_assistant_response(sid, Message(role="assistant", content="Reply 1"))
 
         # Round 2
-        r2, _ = manager.process_messages(
-            [Message(role="user", content="Round 2")], session_id=sid
-        )
+        r2, _ = manager.process_messages([Message(role="user", content="Round 2")], session_id=sid)
         assert len(r2) == 3  # user1 + assistant1 + user2
 
         # Add assistant response
         manager.add_assistant_response(sid, Message(role="assistant", content="Reply 2"))
 
         # Round 3
-        r3, _ = manager.process_messages(
-            [Message(role="user", content="Round 3")], session_id=sid
-        )
+        r3, _ = manager.process_messages([Message(role="user", content="Round 3")], session_id=sid)
         assert len(r3) == 5  # user1 + assistant1 + user2 + assistant2 + user3
 
         # Verify order

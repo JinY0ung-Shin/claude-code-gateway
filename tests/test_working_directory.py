@@ -29,9 +29,9 @@ def test_default_temp_directory():
 
         # Check that a temp directory was created
         assert cli.temp_dir is not None, "Temp directory should be created"
-        assert cli.temp_dir.startswith(
-            tempfile.gettempdir()
-        ), f"Temp dir should be in system temp: {cli.temp_dir}"
+        assert cli.temp_dir.startswith(tempfile.gettempdir()), (
+            f"Temp dir should be in system temp: {cli.temp_dir}"
+        )
         assert "claude_code_workspace_" in cli.temp_dir, "Temp dir should have correct prefix"
         assert os.path.exists(cli.cwd), f"Working directory should exist: {cli.cwd}"
         assert str(cli.cwd) == cli.temp_dir, "Working directory should be the temp directory"

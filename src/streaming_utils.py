@@ -272,7 +272,12 @@ def _normalize_tool_result(result_block) -> Dict[str, Any]:
             "content": result_block.get("content", ""),
             "is_error": bool(result_block.get("is_error", False)),
         }
-    return {"type": "tool_result", "tool_use_id": "", "content": str(result_block), "is_error": False}
+    return {
+        "type": "tool_result",
+        "tool_use_id": "",
+        "content": str(result_block),
+        "is_error": False,
+    }
 
 
 def make_tool_result_response_sse(
@@ -322,9 +327,7 @@ class ToolUseAccumulator:
     def __init__(self):
         self._acc: Dict[tuple, Dict[str, Any]] = {}
 
-    def process_stream_event(
-        self, chunk: Dict[str, Any]
-    ) -> tuple[bool, Optional[Dict[str, Any]]]:
+    def process_stream_event(self, chunk: Dict[str, Any]) -> tuple[bool, Optional[Dict[str, Any]]]:
         """Process a stream_event chunk for tool_use accumulation.
 
         Returns (handled, completed_tool_block):

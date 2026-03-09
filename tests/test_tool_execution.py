@@ -58,9 +58,9 @@ class TestDefaultAllowedTools:
         # These tools should NOT be in the default allowed set
         dangerous_tools = ["Task", "WebFetch", "WebSearch"]
         for tool in dangerous_tools:
-            assert (
-                tool not in DEFAULT_ALLOWED_TOOLS
-            ), f"{tool} should not be in DEFAULT_ALLOWED_TOOLS"
+            assert tool not in DEFAULT_ALLOWED_TOOLS, (
+                f"{tool} should not be in DEFAULT_ALLOWED_TOOLS"
+            )
 
 
 class TestParseClaudeMessage:
@@ -148,9 +148,9 @@ class TestClaudeCliPermissionMode:
         sig = inspect.signature(ClaudeCodeCLI.run_completion)
         param_names = list(sig.parameters.keys())
 
-        assert (
-            "permission_mode" in param_names
-        ), "run_completion should accept permission_mode parameter"
+        assert "permission_mode" in param_names, (
+            "run_completion should accept permission_mode parameter"
+        )
 
 
 if __name__ == "__main__":

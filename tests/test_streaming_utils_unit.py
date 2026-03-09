@@ -100,7 +100,9 @@ async def test_stream_chunks_formats_tool_results_from_legacy_user_messages():
 
     lines = [
         line
-        async for line in stream_chunks(tool_result_source(), request, "req-tool-result", chunks_buffer, logger)
+        async for line in stream_chunks(
+            tool_result_source(), request, "req-tool-result", chunks_buffer, logger
+        )
     ]
 
     # tool_result is emitted as a system_event; since no real text content was sent,
@@ -335,11 +337,19 @@ async def test_stream_response_chunks_success_suppresses_thinking_and_formats_to
     assert "response.output_item.added" in event_types
     assert "response.content_part.added" in event_types
     assert event_types[-1] == "response.completed"
-    assert event_types.index("response.output_text.done") < event_types.index("response.content_part.done")
-    assert event_types.index("response.content_part.done") < event_types.index("response.output_item.done")
+    assert event_types.index("response.output_text.done") < event_types.index(
+        "response.content_part.done"
+    )
+    assert event_types.index("response.content_part.done") < event_types.index(
+        "response.output_item.done"
+    )
     assert event_types.index("response.output_item.done") < event_types.index("response.completed")
 
-    deltas = [payload["delta"] for event_type, payload in parsed if event_type == "response.output_text.delta"]
+    deltas = [
+        payload["delta"]
+        for event_type, payload in parsed
+        if event_type == "response.output_text.delta"
+    ]
     assert deltas[0] == "Hello"
     assert all("hidden" not in delta for delta in deltas)
     assert all("<think>" not in delta for delta in deltas)
@@ -389,7 +399,9 @@ async def test_stream_response_chunks_formats_legacy_assistant_messages():
     ]
     parsed = [_parse_response_sse(line) for line in lines]
 
-    delta_payloads = [payload for event_type, payload in parsed if event_type == "response.output_text.delta"]
+    delta_payloads = [
+        payload for event_type, payload in parsed if event_type == "response.output_text.delta"
+    ]
     assert delta_payloads[0]["delta"] == "Legacy answer"
     assert parsed[-1][1]["response"]["output"][0]["content"][0]["text"] == "Legacy answer"
     assert stream_result["success"] is True
@@ -592,9 +604,29 @@ async def test_stream_chunks_task_messages_as_structured_json():
     """Task system messages are emitted as structured JSON system_event, not content."""
 
     async def task_only_source():
-        yield {"type": "system", "subtype": "task_started", "task_id": "t1", "description": "Analyzing code", "session_id": "s1"}
-        yield {"type": "system", "subtype": "task_progress", "task_id": "t1", "description": "Reading files", "last_tool_name": "Read", "usage": {"tool_uses": 3}}
-        yield {"type": "system", "subtype": "task_notification", "task_id": "t1", "status": "completed", "summary": "Done", "usage": {"tool_uses": 5}}
+        yield {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t1",
+            "description": "Analyzing code",
+            "session_id": "s1",
+        }
+        yield {
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "t1",
+            "description": "Reading files",
+            "last_tool_name": "Read",
+            "usage": {"tool_uses": 3},
+        }
+        yield {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "t1",
+            "status": "completed",
+            "summary": "Done",
+            "usage": {"tool_uses": 5},
+        }
 
     request = ChatCompletionRequest(
         model="claude-test",
@@ -612,7 +644,7 @@ async def test_stream_chunks_task_messages_as_structured_json():
     task_events = []
     for line in lines:
         if line.startswith("data: ") and "system_event" in line:
-            parsed = json.loads(line[len("data: "):])
+            parsed = json.loads(line[len("data: ") :])
             task_events.append(parsed["system_event"])
 
     assert len(task_events) == 3
@@ -664,8 +696,20 @@ async def test_stream_response_chunks_task_events_as_custom_sse():
     """Task events are emitted as custom SSE event types, not content."""
 
     async def task_only_source():
-        yield {"type": "system", "subtype": "task_started", "task_id": "t1", "description": "Working", "session_id": "s1"}
-        yield {"type": "system", "subtype": "task_notification", "task_id": "t1", "status": "completed", "summary": "Done"}
+        yield {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "t1",
+            "description": "Working",
+            "session_id": "s1",
+        }
+        yield {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "t1",
+            "status": "completed",
+            "summary": "Done",
+        }
 
     stream_result = {}
     lines = [
@@ -734,34 +778,40 @@ class TestToolUseAccumulator:
         acc = ToolUseAccumulator()
 
         # content_block_start
-        handled, result = acc.process_stream_event({
-            "type": "stream_event",
-            "event": {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "tool_use", "id": "tool-1", "name": "Read"},
-            },
-        })
+        handled, result = acc.process_stream_event(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "tool_use", "id": "tool-1", "name": "Read"},
+                },
+            }
+        )
         assert handled is True
         assert result is None
 
         # content_block_delta (input_json_delta)
-        handled, result = acc.process_stream_event({
-            "type": "stream_event",
-            "event": {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "input_json_delta", "partial_json": '{"path":"/tmp/a.txt"}'},
-            },
-        })
+        handled, result = acc.process_stream_event(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": '{"path":"/tmp/a.txt"}'},
+                },
+            }
+        )
         assert handled is True
         assert result is None
 
         # content_block_stop
-        handled, result = acc.process_stream_event({
-            "type": "stream_event",
-            "event": {"type": "content_block_stop", "index": 0},
-        })
+        handled, result = acc.process_stream_event(
+            {
+                "type": "stream_event",
+                "event": {"type": "content_block_stop", "index": 0},
+            }
+        )
         assert handled is True
         assert result is not None
         assert result["name"] == "Read"
@@ -770,46 +820,54 @@ class TestToolUseAccumulator:
 
     def test_tracks_incomplete_blocks(self):
         acc = ToolUseAccumulator()
-        acc.process_stream_event({
-            "type": "stream_event",
-            "event": {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "tool_use", "id": "tool-1", "name": "Write"},
-            },
-        })
+        acc.process_stream_event(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "tool_use", "id": "tool-1", "name": "Write"},
+                },
+            }
+        )
         assert acc.has_incomplete is True
         assert len(acc.incomplete_keys) == 1
 
     def test_subagent_text_delta_is_skipped(self):
         acc = ToolUseAccumulator()
-        handled, result = acc.process_stream_event({
-            "type": "stream_event",
-            "parent_tool_use_id": "parent-1",
-            "event": {
-                "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "sub-agent output"},
-            },
-        })
+        handled, result = acc.process_stream_event(
+            {
+                "type": "stream_event",
+                "parent_tool_use_id": "parent-1",
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "sub-agent output"},
+                },
+            }
+        )
         assert handled is True
         assert result is None
 
     def test_includes_parent_tool_use_id_when_present(self):
         acc = ToolUseAccumulator()
-        acc.process_stream_event({
-            "type": "stream_event",
-            "parent_tool_use_id": "parent-1",
-            "event": {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "tool_use", "id": "tool-1", "name": "Read"},
-            },
-        })
-        _, result = acc.process_stream_event({
-            "type": "stream_event",
-            "parent_tool_use_id": "parent-1",
-            "event": {"type": "content_block_stop", "index": 0},
-        })
+        acc.process_stream_event(
+            {
+                "type": "stream_event",
+                "parent_tool_use_id": "parent-1",
+                "event": {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "tool_use", "id": "tool-1", "name": "Read"},
+                },
+            }
+        )
+        _, result = acc.process_stream_event(
+            {
+                "type": "stream_event",
+                "parent_tool_use_id": "parent-1",
+                "event": {"type": "content_block_stop", "index": 0},
+            }
+        )
         assert result["parent_tool_use_id"] == "parent-1"
 
 

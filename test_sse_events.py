@@ -20,14 +20,14 @@ API_KEY = os.getenv("API_KEY", "")
 PROMPT = "이 디렉토리에 어떤 파일이 있는지 확인해줘 subagent를 사용해서 시켜줘"
 
 COLORS = {
-    "text_delta": "\033[37m",       # 흰색
-    "tool_use": "\033[33m",         # 노란색
-    "tool_result": "\033[36m",      # 시안
-    "task_started": "\033[35m",     # 마젠타
-    "task_progress": "\033[34m",    # 파랑
-    "task_notification": "\033[32m", # 초록
-    "lifecycle": "\033[90m",        # 회색
-    "error": "\033[31m",            # 빨강
+    "text_delta": "\033[37m",  # 흰색
+    "tool_use": "\033[33m",  # 노란색
+    "tool_result": "\033[36m",  # 시안
+    "task_started": "\033[35m",  # 마젠타
+    "task_progress": "\033[34m",  # 파랑
+    "task_notification": "\033[32m",  # 초록
+    "lifecycle": "\033[90m",  # 회색
+    "error": "\033[31m",  # 빨강
     "reset": "\033[0m",
 }
 

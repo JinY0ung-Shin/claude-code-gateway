@@ -267,7 +267,7 @@ class TestTruncateToolContent:
         max_len = MessageAdapter.TOOL_RESULT_MAX_LENGTH
         content = "a" * (max_len + 100)
         result = MessageAdapter._truncate_tool_content(content)
-        
+
         assert len(result) == max_len + len("\n... (truncated)")
         assert result.endswith("\n... (truncated)")
         assert result.startswith("a" * max_len)
@@ -316,7 +316,10 @@ class TestBlockFormatting:
         tool_result_block = SimpleNamespace(tool_use_id="tool-1", content="result", is_error=True)
 
         assert MessageAdapter._block_to_dict(text_block) == {"type": "text", "text": "plain text"}
-        assert MessageAdapter._block_to_dict(thinking_block) == {"type": "thinking", "thinking": "plan"}
+        assert MessageAdapter._block_to_dict(thinking_block) == {
+            "type": "thinking",
+            "thinking": "plan",
+        }
         assert MessageAdapter._block_to_dict(tool_use_block) == {
             "type": "tool_use",
             "id": "tool-1",
@@ -349,7 +352,10 @@ class TestBlockFormatting:
         assert MessageAdapter._block_to_dict(tool_result)["content"].endswith("\n... (truncated)")
 
     def test_format_block_renders_thinking_and_json_blocks(self):
-        assert MessageAdapter.format_block({"type": "thinking", "thinking": "plan"}) == "<think>plan</think>"
+        assert (
+            MessageAdapter.format_block({"type": "thinking", "thinking": "plan"})
+            == "<think>plan</think>"
+        )
 
         formatted = MessageAdapter.format_block(
             {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"path": "README.md"}}

@@ -69,7 +69,6 @@ class Pipe:
             self._locks[chat_id] = asyncio.Lock()
         return self._locks[chat_id]
 
-
     async def pipe(
         self,
         body: dict,
@@ -123,7 +122,9 @@ class Pipe:
                     state = None
 
             prev_response_id = state["previous_response_id"] if state else None
-            log.info("[PIPE] chat_id=%s, prev_response_id=%s, state=%s", chat_id, prev_response_id, state)
+            log.info(
+                "[PIPE] chat_id=%s, prev_response_id=%s, state=%s", chat_id, prev_response_id, state
+            )
 
             # Build /v1/responses payload
             payload = {
@@ -137,10 +138,14 @@ class Pipe:
                 payload["instructions"] = instructions
 
             if use_stream:
-                async for chunk in self._pipe_stream(chat_id, payload, instructions, instructions_hash, body):
+                async for chunk in self._pipe_stream(
+                    chat_id, payload, instructions, instructions_hash, body
+                ):
                     yield chunk
             else:
-                result = await self._pipe_non_stream(chat_id, payload, instructions, instructions_hash, body)
+                result = await self._pipe_non_stream(
+                    chat_id, payload, instructions, instructions_hash, body
+                )
                 yield result
 
     async def _pipe_stream(
@@ -229,7 +234,9 @@ class Pipe:
     async def _call_responses(self, chat_id: str, payload: dict, instructions_hash: str) -> str:
         """Non-streaming /v1/responses call."""
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
-            resp = await client.post(self._responses_url(), json=payload, headers=self._make_headers())
+            resp = await client.post(
+                self._responses_url(), json=payload, headers=self._make_headers()
+            )
 
             if resp.status_code != 200:
                 detail = await self._read_error_body(resp)
@@ -258,10 +265,16 @@ class Pipe:
         self, chat_id: str, payload: dict, instructions_hash: str
     ) -> AsyncGenerator[str, None]:
         """Streaming /v1/responses call. Yields text deltas."""
-        log.info("[STREAM] Starting request to %s with payload keys: %s", self._responses_url(), list(payload.keys()))
+        log.info(
+            "[STREAM] Starting request to %s with payload keys: %s",
+            self._responses_url(),
+            list(payload.keys()),
+        )
         log.info("[STREAM] previous_response_id=%s", payload.get("previous_response_id"))
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
-            async with client.stream("POST", self._responses_url(), json=payload, headers=self._make_headers()) as resp:
+            async with client.stream(
+                "POST", self._responses_url(), json=payload, headers=self._make_headers()
+            ) as resp:
                 log.info("[STREAM] Response status: %s", resp.status_code)
                 if resp.status_code != 200:
                     body = ""
@@ -357,14 +370,22 @@ class Pipe:
                     elif event_type in ("response.failed", "error"):
                         error = event.get("response", {}).get("error", {})
                         if not error:
-                            error = {"code": event.get("code", "unknown"), "message": event.get("message", "Unknown error")}
+                            error = {
+                                "code": event.get("code", "unknown"),
+                                "message": event.get("message", "Unknown error"),
+                            }
                         error_msg = error.get("message", "Unknown error")
                         error_code = error.get("code", "")
                         if error_code in ("sdk_error", "empty_response", "server_error"):
                             raise Exception(f"Response failed: {error_msg}")
                         raise ChainResetError(f"Response failed: {error_code} - {error_msg}")
 
-                log.info("[STREAM] Stream ended. lines=%d, completed=%s, chat=%s", line_count, completed, chat_id)
+                log.info(
+                    "[STREAM] Stream ended. lines=%d, completed=%s, chat=%s",
+                    line_count,
+                    completed,
+                    chat_id,
+                )
                 if not completed:
                     log.warning("[STREAM] No response.completed event received!")
                     yield "\n\n[Warning: Response may be incomplete]"
