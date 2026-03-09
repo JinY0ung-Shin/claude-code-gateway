@@ -66,26 +66,37 @@ def extract_stop_reason(messages: list) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _extract_tool_blocks(content) -> tuple[list, list]:
+    """Separate tool_use/tool_result blocks from other content.
+
+    Returns (tool_blocks, non_tool_content).
+    tool_blocks: list of tool_use and tool_result dicts/objects
+    non_tool_content: remaining content blocks (text, thinking, etc.)
+    """
+    if not isinstance(content, list):
+        return [], content if content else []
+    tool_blocks = []
+    non_tool = []
+    for b in content:
+        if isinstance(b, (ToolUseBlock, ToolResultBlock)):
+            tool_blocks.append(b)
+        elif isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result"):
+            tool_blocks.append(b)
+        elif hasattr(b, "type") and getattr(b, "type", None) in ("tool_use", "tool_result"):
+            tool_blocks.append(b)
+        else:
+            non_tool.append(b)
+    return tool_blocks, non_tool
+
+
 def _filter_tool_blocks(content):
     """Filter out tool_use and tool_result blocks from a content list.
 
     Only filters by block type (dict or SDK object). Text blocks are never
     filtered to avoid suppressing legitimate user-visible content.
     """
-    if not isinstance(content, list):
-        return content
-    filtered = []
-    for b in content:
-        # Filter SDK Pydantic objects directly
-        if isinstance(b, (ToolUseBlock, ToolResultBlock)):
-            continue
-        # Filter dict blocks by type
-        if isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result"):
-            continue
-        if hasattr(b, "type") and getattr(b, "type", None) in ("tool_use", "tool_result"):
-            continue
-        filtered.append(b)
-    return filtered or None
+    _, non_tool = _extract_tool_blocks(content)
+    return non_tool or None
 
 
 def process_chunk_content(chunk: Dict[str, Any], content_sent: bool = False):
@@ -311,6 +322,29 @@ def is_assistant_content_chunk(chunk: Dict[str, Any]) -> bool:
     return isinstance(chunk.get("content"), list)
 
 
+def extract_embedded_tool_blocks(chunk: Dict[str, Any]) -> list:
+    """Extract tool_use/tool_result blocks embedded in assistant content.
+
+    Codex yields ``{"type": "assistant", "content": [...]}`` with tool_use
+    and tool_result dicts inline (from collab_tool_call conversion).  Claude's
+    SDK sends these as separate stream_event / user chunks.  This function
+    lets the streaming loop emit them as structured SSE events regardless
+    of which backend produced them.
+
+    Returns a (possibly empty) list of tool block dicts.
+    """
+    if not is_assistant_content_chunk(chunk):
+        return []
+    content = chunk.get("content")
+    if content is None:
+        msg = chunk.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, list):
+        return []
+    tool_blocks, _ = _extract_tool_blocks(content)
+    return tool_blocks
+
+
 # ---------------------------------------------------------------------------
 # Shared streaming helpers
 # ---------------------------------------------------------------------------
@@ -522,6 +556,16 @@ async def stream_chunks(
             chunks_buffer.append(chunk)
             continue
 
+        # Emit tool_use/tool_result blocks embedded in assistant content
+        # (Codex collab_tool_call → tool blocks arrive here, not via stream_event)
+        embedded_tools = extract_embedded_tool_blocks(chunk)
+        for tb in embedded_tools:
+            if tb.get("type") == "tool_use":
+                yield make_task_sse(request_id, request.model, tb)
+            elif tb.get("type") == "tool_result":
+                result_data = _normalize_tool_result(tb)
+                yield make_task_sse(request_id, request.model, result_data)
+
         # Content chunks (assistant messages, results)
         chunks_buffer.append(chunk)
         text = format_chunk_content(chunk, content_sent)
@@ -721,6 +765,23 @@ async def stream_response_chunks(
                     )
                 chunks_buffer.append(chunk)
                 continue
+
+            # Emit tool_use/tool_result blocks embedded in assistant content
+            # (Codex collab_tool_call → tool blocks arrive here, not via stream_event)
+            embedded_tools = extract_embedded_tool_blocks(chunk)
+            for tb in embedded_tools:
+                if tb.get("type") == "tool_use":
+                    yield make_tool_use_response_sse(
+                        tb,
+                        sequence_number=_next_seq(),
+                        parent_tool_use_id=tb.get("parent_tool_use_id"),
+                    )
+                elif tb.get("type") == "tool_result":
+                    yield make_tool_result_response_sse(
+                        tb,
+                        sequence_number=_next_seq(),
+                        parent_tool_use_id=tb.get("parent_tool_use_id"),
+                    )
 
             # Content chunks (assistant messages, results)
             chunks_buffer.append(chunk)

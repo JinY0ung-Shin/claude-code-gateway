@@ -12,6 +12,7 @@ from src.models import ChatCompletionRequest, Message
 from src.response_models import OutputItem, ResponseObject
 from src.streaming_utils import (
     ToolUseAccumulator,
+    extract_embedded_tool_blocks,
     extract_sdk_usage,
     extract_user_tool_results,
     format_chunk_content,
@@ -932,3 +933,164 @@ class TestFormatChunkContent:
     def test_returns_none_for_empty_chunk(self):
         chunk = {"type": "metadata"}
         assert format_chunk_content(chunk, content_sent=False) is None
+
+
+# ==================== Embedded tool blocks (Codex collab_tool_call) ====================
+
+
+class TestExtractEmbeddedToolBlocks:
+    def test_extracts_tool_use_and_tool_result_from_assistant_content(self):
+        chunk = {
+            "type": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "Agent", "input": {"prompt": "hi"}},
+                {"type": "tool_result", "tool_use_id": "t1", "content": "done", "is_error": False},
+                {"type": "text", "text": "Final answer"},
+            ],
+        }
+        blocks = extract_embedded_tool_blocks(chunk)
+        assert len(blocks) == 2
+        assert blocks[0]["type"] == "tool_use"
+        assert blocks[1]["type"] == "tool_result"
+
+    def test_returns_empty_for_text_only_content(self):
+        chunk = {
+            "type": "assistant",
+            "content": [{"type": "text", "text": "No tools here"}],
+        }
+        assert extract_embedded_tool_blocks(chunk) == []
+
+    def test_returns_empty_for_non_assistant_chunk(self):
+        chunk = {"type": "system", "subtype": "task_started"}
+        assert extract_embedded_tool_blocks(chunk) == []
+
+    def test_handles_message_wrapper(self):
+        chunk = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "ls"}},
+                ]
+            },
+        }
+        blocks = extract_embedded_tool_blocks(chunk)
+        assert len(blocks) == 1
+        assert blocks[0]["name"] == "Bash"
+
+
+@pytest.mark.asyncio
+async def test_stream_chunks_emits_embedded_tool_blocks_as_system_events():
+    """Codex-style embedded tool_use/tool_result in assistant content emit as system_event."""
+
+    async def codex_tool_source():
+        yield {
+            "type": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "codex_agent_abc",
+                    "name": "Agent",
+                    "input": {"prompt": "explore"},
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "codex_agent_abc",
+                    "content": "Found 3 files",
+                    "is_error": False,
+                },
+                {"type": "text", "text": "Here are the results."},
+            ],
+        }
+
+    request = ChatCompletionRequest(
+        model="codex",
+        messages=[Message(role="user", content="Check files")],
+        stream=True,
+    )
+    chunks_buffer = []
+    lines = [
+        line
+        async for line in stream_chunks(
+            codex_tool_source(), request, "req-codex-tool", chunks_buffer, logging.getLogger("test")
+        )
+    ]
+
+    # Should have: tool_use system_event, tool_result system_event, role+content SSE
+    system_events = []
+    for line in lines:
+        if line.startswith("data: ") and "system_event" in line:
+            parsed = json.loads(line[len("data: ") :])
+            system_events.append(parsed["system_event"])
+
+    assert len(system_events) == 2
+    assert system_events[0]["type"] == "tool_use"
+    assert system_events[0]["name"] == "Agent"
+    assert system_events[1]["type"] == "tool_result"
+    assert system_events[1]["tool_use_id"] == "codex_agent_abc"
+    assert system_events[1]["content"] == "Found 3 files"
+
+    # Text content should also be emitted
+    all_content = "".join(lines)
+    assert "Here are the results." in all_content
+
+
+@pytest.mark.asyncio
+async def test_stream_response_chunks_emits_embedded_tool_blocks_as_structured_sse():
+    """Codex-style embedded tool blocks emit as response.tool_use/response.tool_result SSE."""
+
+    async def codex_tool_source():
+        yield {
+            "type": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "codex_agent_xyz",
+                    "name": "Agent",
+                    "input": {"prompt": "analyze"},
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "codex_agent_xyz",
+                    "content": "Analysis complete",
+                    "is_error": False,
+                },
+                {"type": "text", "text": "The analysis is done."},
+            ],
+        }
+
+    chunks_buffer = []
+    stream_result = {}
+    lines = [
+        line
+        async for line in stream_response_chunks(
+            chunk_source=codex_tool_source(),
+            model="codex",
+            response_id="resp-codex-tool",
+            output_item_id="msg-codex-tool",
+            chunks_buffer=chunks_buffer,
+            logger=logging.getLogger("test-codex-resp-tool"),
+            stream_result=stream_result,
+        )
+    ]
+    parsed = [_parse_response_sse(line) for line in lines]
+    event_types = [et for et, _ in parsed]
+
+    # Should have structured tool events
+    assert "response.tool_use" in event_types
+    assert "response.tool_result" in event_types
+
+    tool_use_ev = next(p for et, p in parsed if et == "response.tool_use")
+    assert tool_use_ev["name"] == "Agent"
+    assert tool_use_ev["tool_use_id"] == "codex_agent_xyz"
+    assert tool_use_ev["input"] == {"prompt": "analyze"}
+
+    tool_result_ev = next(p for et, p in parsed if et == "response.tool_result")
+    assert tool_result_ev["tool_use_id"] == "codex_agent_xyz"
+    assert tool_result_ev["content"] == "Analysis complete"
+
+    # Text content should also be emitted as delta
+    deltas = [p["delta"] for et, p in parsed if et == "response.output_text.delta"]
+    assert "The analysis is done." in deltas
+
+    assert stream_result["success"] is True
+    assert parsed[-1][0] == "response.completed"
