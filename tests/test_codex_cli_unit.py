@@ -36,8 +36,8 @@ def codex_cli(tmp_path, monkeypatch):
     fake_bin = tmp_path / "codex"
     fake_bin.touch()
     fake_bin.chmod(0o755)
-    monkeypatch.setattr("src.codex_cli.CODEX_CLI_PATH", str(fake_bin))
-    monkeypatch.setattr("src.codex_cli.CODEX_CONFIG_ISOLATION", True)
+    monkeypatch.setattr("src.backends.codex.client.CODEX_CLI_PATH", str(fake_bin))
+    monkeypatch.setattr("src.backends.codex.client.CODEX_CONFIG_ISOLATION", True)
     return CodexCLI(timeout=5000, cwd=str(tmp_path))
 
 
@@ -370,21 +370,21 @@ class TestFindCodexBinary:
     def test_explicit_path(self, tmp_path, monkeypatch):
         fake_bin = tmp_path / "my-codex"
         fake_bin.touch()
-        monkeypatch.setattr("src.codex_cli.CODEX_CLI_PATH", str(fake_bin))
+        monkeypatch.setattr("src.backends.codex.client.CODEX_CLI_PATH", str(fake_bin))
         assert CodexCLI._find_codex_binary() == str(fake_bin)
 
     def test_explicit_path_missing_raises(self, monkeypatch):
-        monkeypatch.setattr("src.codex_cli.CODEX_CLI_PATH", "/nonexistent/codex")
+        monkeypatch.setattr("src.backends.codex.client.CODEX_CLI_PATH", "/nonexistent/codex")
         with pytest.raises(RuntimeError, match="non-existent"):
             CodexCLI._find_codex_binary()
 
     def test_which_fallback(self, monkeypatch):
-        monkeypatch.setattr("src.codex_cli.CODEX_CLI_PATH", "codex")
+        monkeypatch.setattr("src.backends.codex.client.CODEX_CLI_PATH", "codex")
         monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/codex")
         assert CodexCLI._find_codex_binary() == "/usr/local/bin/codex"
 
     def test_not_found_raises(self, monkeypatch):
-        monkeypatch.setattr("src.codex_cli.CODEX_CLI_PATH", "codex")
+        monkeypatch.setattr("src.backends.codex.client.CODEX_CLI_PATH", "codex")
         monkeypatch.setattr("shutil.which", lambda _: None)
         with pytest.raises(RuntimeError, match="not found"):
             CodexCLI._find_codex_binary()
@@ -415,7 +415,7 @@ class TestBuildEnv:
         assert ".codex-server" in env["CODEX_HOME"]
 
     def test_config_isolation_disabled(self, codex_cli, monkeypatch):
-        monkeypatch.setattr("src.codex_cli.CODEX_CONFIG_ISOLATION", False)
+        monkeypatch.setattr("src.backends.codex.client.CODEX_CONFIG_ISOLATION", False)
         # Remove CODEX_HOME from env if present
         monkeypatch.delenv("CODEX_HOME", raising=False)
         env = codex_cli._build_env()
@@ -1058,7 +1058,6 @@ class TestNormalizeCollabToolCallEvent:
         result_block = next(b for b in r2["content"] if b["type"] == "tool_result")
         assert result_block["tool_use_id"] == spawn_tool_id
 
-
     def test_mixed_toplevel_spawn_embedded_wait_correlation(self):
         """Top-level collab spawn_agent + embedded wait in agent_message
         correlate through the shared agent_tool_ids dict."""
@@ -1248,9 +1247,7 @@ class TestConcurrentRunCompletionIsolation:
 
         async def collect(jsonl_lines, is_first):
             with patch.object(codex_cli, "_spawn_codex") as mock_spawn:
-                mock_proc = _make_delayed_mock_process(
-                    jsonl_lines, barrier, is_first=is_first
-                )
+                mock_proc = _make_delayed_mock_process(jsonl_lines, barrier, is_first=is_first)
                 mock_spawn.return_value = _AsyncCM(mock_proc)
                 chunks = []
                 async for chunk in codex_cli.run_completion("test"):

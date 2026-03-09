@@ -79,8 +79,14 @@ class FakeBackend:
 
 @pytest.fixture(autouse=True)
 def clean_registry():
-    """Ensure registry is clean before and after each test."""
+    """Ensure registry is clean before and after each test.
+
+    Re-registers descriptors so resolve_model() works against known model names.
+    """
     BackendRegistry.clear()
+    from tests.conftest import register_all_descriptors
+
+    register_all_descriptors()
     yield
     BackendRegistry.clear()
 
@@ -154,9 +160,16 @@ class TestBackendRegistry:
         assert "codex" in ids
         assert "sonnet" not in ids
 
-    def test_get_error_message_lists_available(self):
+    def test_get_error_message_known_but_not_available(self):
+        """When a descriptor is registered but no client, error says 'known but not available'."""
+        BackendRegistry.register("claude", FakeBackend())
+        with pytest.raises(ValueError, match="known but not available"):
+            BackendRegistry.get("codex")
+
+    def test_get_error_message_lists_available_for_unknown(self):
+        """When a backend is completely unknown, error lists available backends."""
         BackendRegistry.register("claude", FakeBackend())
         try:
-            BackendRegistry.get("codex")
+            BackendRegistry.get("nonexistent")
         except ValueError as e:
             assert "claude" in str(e)

@@ -72,6 +72,15 @@ class FakeClaudeBackend:
             },
         }
 
+    def build_options(self, request, resolved, overrides=None):
+        options = request.to_claude_options() if hasattr(request, "to_claude_options") else {}
+        if overrides:
+            options.update(overrides)
+        if resolved.provider_model:
+            options["model"] = resolved.provider_model
+        options["permission_mode"] = "bypassPermissions"
+        return options
+
     def parse_message(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         return "claude reply"
 
@@ -123,6 +132,15 @@ class FailingCodexBackend:
                 "cache_creation_input_tokens": 0,
             },
         }
+
+    def build_options(self, request, resolved, overrides=None):
+        options = request.to_claude_options() if hasattr(request, "to_claude_options") else {}
+        if overrides:
+            options.update(overrides)
+        if resolved.provider_model:
+            options["model"] = resolved.provider_model
+        options["permission_mode"] = "bypassPermissions"
+        return options
 
     def parse_message(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         return "codex reply"
@@ -193,6 +211,15 @@ class SlowCodexBackend:
                 "cache_creation_input_tokens": 0,
             },
         }
+
+    def build_options(self, request, resolved, overrides=None):
+        options = request.to_claude_options() if hasattr(request, "to_claude_options") else {}
+        if overrides:
+            options.update(overrides)
+        if resolved.provider_model:
+            options["model"] = resolved.provider_model
+        options["permission_mode"] = "bypassPermissions"
+        return options
 
     def parse_message(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         for m in reversed(messages):

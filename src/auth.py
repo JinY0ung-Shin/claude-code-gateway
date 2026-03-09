@@ -48,93 +48,23 @@ class BackendAuthProvider(ABC):
         """
 
 
-class ClaudeAuthProvider(BackendAuthProvider):
-    """Claude backend auth — delegates to ANTHROPIC_AUTH_TOKEN or CLI auth."""
-
-    @property
-    def name(self) -> str:
-        return "claude"
-
-    def __init__(self):
-        self.auth_method = self._detect_method()
-
-    def _detect_method(self) -> str:
-        explicit = os.getenv("CLAUDE_AUTH_METHOD", "").lower()
-        if explicit:
-            method_map = {
-                "cli": "claude_cli",
-                "claude_cli": "claude_cli",
-                "api_key": "anthropic",
-                "anthropic": "anthropic",
-            }
-            if explicit in method_map:
-                return method_map[explicit]
-            raise ValueError(
-                f"Unsupported CLAUDE_AUTH_METHOD '{explicit}'. "
-                f"Supported values: {', '.join(method_map.keys())}"
-            )
-        if os.getenv("ANTHROPIC_AUTH_TOKEN"):
-            return "anthropic"
-        return "claude_cli"
-
-    def validate(self) -> Dict[str, Any]:
-        if self.auth_method == "anthropic":
-            key = os.getenv("ANTHROPIC_AUTH_TOKEN")
-            if not key:
-                return {
-                    "valid": False,
-                    "errors": ["ANTHROPIC_AUTH_TOKEN environment variable not set"],
-                    "config": {},
-                }
-            if len(key) < 10:
-                logger.warning("ANTHROPIC_AUTH_TOKEN is shorter than 10 characters")
-            return {
-                "valid": True,
-                "errors": [],
-                "config": {"api_key_present": True, "api_key_length": len(key)},
-            }
-        # claude_cli — assume valid, actual check happens at SDK call time
-        return {
-            "valid": True,
-            "errors": [],
-            "config": {
-                "method": "Claude Code CLI authentication",
-                "note": "Using existing Claude Code CLI authentication",
-            },
-        }
-
-    def build_env(self) -> Dict[str, str]:
-        if self.auth_method == "anthropic":
-            key = os.getenv("ANTHROPIC_AUTH_TOKEN")
-            if key:
-                return {"ANTHROPIC_AUTH_TOKEN": key}
-        return {}
-
-    def get_isolation_vars(self) -> List[str]:
-        return ["OPENAI_API_KEY"]
+# Concrete auth providers are imported lazily to avoid circular imports.
+# The cycle is: auth.py -> backends/claude/auth.py -> auth.py (for BackendAuthProvider).
+# Direct imports from the .auth submodules (not __init__.py) are safe ONLY AFTER
+# this module has finished defining BackendAuthProvider.
+# We use a helper function to defer the import to first use.
 
 
-class CodexAuthProvider(BackendAuthProvider):
-    """Codex backend auth — OPENAI_API_KEY is optional (Codex CLI handles its own auth)."""
+def _get_claude_auth_provider_class():
+    from src.backends.claude.auth import ClaudeAuthProvider
 
-    @property
-    def name(self) -> str:
-        return "codex"
+    return ClaudeAuthProvider
 
-    def validate(self) -> Dict[str, Any]:
-        key = os.getenv("OPENAI_API_KEY")
-        return {
-            "valid": True,
-            "errors": [],
-            "config": {"api_key_present": bool(key)},
-        }
 
-    def build_env(self) -> Dict[str, str]:
-        key = os.getenv("OPENAI_API_KEY")
-        return {"OPENAI_API_KEY": key} if key else {}
+def _get_codex_auth_provider_class():
+    from src.backends.codex.auth import CodexAuthProvider
 
-    def get_isolation_vars(self) -> List[str]:
-        return ["ANTHROPIC_AUTH_TOKEN"]
+    return CodexAuthProvider
 
 
 # ============================================================================
@@ -154,25 +84,43 @@ class ClaudeCodeAuthManager:
     def __init__(self):
         self.env_api_key = os.getenv("API_KEY")  # Environment API key
 
-        # Delegate Claude auth to the provider
-        self._claude_provider = ClaudeAuthProvider()
+        # Delegate Claude auth to the provider (lazy import to break circular dep)
+        _ClaudeAuthProvider = _get_claude_auth_provider_class()
+        self._claude_provider = _ClaudeAuthProvider()
         self.auth_method = self._claude_provider.auth_method
         self.auth_status = self._validate_auth_method()
 
         # Codex provider (lazy — only used when explicitly requested)
-        self._codex_provider: Optional[CodexAuthProvider] = None
+        self._codex_provider = None
 
     # ------------------------------------------------------------------
     # Backend provider access
     # ------------------------------------------------------------------
 
     def get_provider(self, backend: str) -> BackendAuthProvider:
-        """Return the auth provider for the given backend name."""
+        """Return the auth provider for the given backend name.
+
+        Tries registry first (post-startup path), then falls back to
+        direct instantiation for known backends (pre-startup path).
+        """
+        # Post-startup: try to get auth provider from live backend client
+        try:
+            from src.backends.base import BackendRegistry
+
+            if BackendRegistry.is_registered(backend):
+                client = BackendRegistry.get(backend)
+                if hasattr(client, "get_auth_provider"):
+                    return client.get_auth_provider()
+        except Exception:
+            pass
+
+        # Pre-startup / fallback: direct instantiation for known backends
         if backend == "claude":
             return self._claude_provider
         if backend == "codex":
             if self._codex_provider is None:
-                self._codex_provider = CodexAuthProvider()
+                _CodexAuthProvider = _get_codex_auth_provider_class()
+                self._codex_provider = _CodexAuthProvider()
             return self._codex_provider
         raise ValueError(f"Unknown backend: {backend!r}")
 
@@ -305,9 +253,22 @@ def get_claude_code_auth_info() -> Dict[str, Any]:
 
 
 def get_all_backends_auth_info() -> Dict[str, Any]:
-    """Get authentication info for all backends (for /v1/auth/status)."""
+    """Get authentication info for all backends (for /v1/auth/status).
+
+    Iterates descriptors from BackendRegistry so all known backends
+    (including unavailable ones) are reported.
+    """
+    from src.backends.base import BackendRegistry
+
     result = {}
-    for backend_name in ("claude", "codex"):
+
+    # Use descriptors to discover all known backends
+    descriptors = BackendRegistry.all_descriptors()
+    backend_names = set(descriptors.keys())
+    # Also include hard-coded fallbacks for pre-startup
+    backend_names.update(("claude", "codex"))
+
+    for backend_name in sorted(backend_names):
         try:
             provider = auth_manager.get_provider(backend_name)
             status = provider.validate()
@@ -318,3 +279,15 @@ def get_all_backends_auth_info() -> Dict[str, Any]:
         except Exception as e:
             result[backend_name] = {"status": {"valid": False, "errors": [str(e)]}}
     return result
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat lazy re-exports for ClaudeAuthProvider / CodexAuthProvider
+# so that ``from src.auth import ClaudeAuthProvider`` still works.
+# ---------------------------------------------------------------------------
+def __getattr__(name):
+    if name == "ClaudeAuthProvider":
+        return _get_claude_auth_provider_class()
+    if name == "CodexAuthProvider":
+        return _get_codex_auth_provider_class()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

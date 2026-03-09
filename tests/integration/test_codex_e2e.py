@@ -208,8 +208,8 @@ async def test_process_diagnostics_nonzero_exit(integration_codex_cli, monkeypat
 async def test_timeout(mock_codex_bin, tmp_path, monkeypatch):
     """A subprocess that stalls triggers a timeout error chunk and is cleaned up."""
     monkeypatch.setenv("MOCK_CODEX_SCENARIO", "timeout")
-    monkeypatch.setattr("src.codex_cli.CODEX_CLI_PATH", mock_codex_bin)
-    monkeypatch.setattr("src.codex_cli.CODEX_CONFIG_ISOLATION", True)
+    monkeypatch.setattr("src.backends.codex.client.CODEX_CLI_PATH", mock_codex_bin)
+    monkeypatch.setattr("src.backends.codex.client.CODEX_CONFIG_ISOLATION", True)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-integration")
 
     # Very short timeout (500ms) to make the test fast

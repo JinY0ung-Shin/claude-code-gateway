@@ -3,9 +3,8 @@ Parameter validation and mapping utilities for OpenAI to Claude Code SDK convers
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Set
 from src.models import ChatCompletionRequest
-from src.constants import ALL_MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -13,8 +12,24 @@ logger = logging.getLogger(__name__)
 class ParameterValidator:
     """Validates and maps OpenAI Chat Completions parameters to Claude Code SDK options."""
 
-    # Use combined model list from constants (single source of truth)
-    SUPPORTED_MODELS = set(ALL_MODELS)
+    @classmethod
+    def _get_supported_models(cls) -> Set[str]:
+        """Dynamically fetch supported models from the backend registry."""
+        try:
+            from src.backends.base import BackendRegistry
+
+            models = BackendRegistry.all_model_ids()
+            if models:
+                return models
+        except Exception:
+            pass
+        # Fallback to static imports for backward compatibility
+        try:
+            from src.constants import ALL_MODELS
+
+            return set(ALL_MODELS)
+        except Exception:
+            return set()
 
     @classmethod
     def validate_model(cls, model: str) -> bool:
@@ -24,12 +39,13 @@ class ParameterValidator:
         (before the first ``/``) is checked against the known model list.
         Unknown models are warned but still allowed for graceful degradation.
         """
+        supported = cls._get_supported_models()
         base_model = model.split("/")[0] if "/" in model else model
-        if base_model not in cls.SUPPORTED_MODELS:
+        if base_model not in supported:
             logger.warning(
                 f"Model '{model}' is not in the known supported models list. "
                 f"It will still be attempted but may fail. "
-                f"Supported models: {sorted(cls.SUPPORTED_MODELS)}"
+                f"Supported models: {sorted(supported)}"
             )
             # Return True anyway to allow graceful degradation
         return True

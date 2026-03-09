@@ -3,7 +3,6 @@
 Unit tests for helper functions in src.main.
 """
 
-import asyncio
 import json
 import logging
 import uuid
@@ -13,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import src.main as main
+from src.backends.base import BackendRegistry
+from src.backends.claude.constants import CLAUDE_TOOLS
 from src.constants import DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_PORT
 from src.models import ChatCompletionRequest, Message, StreamOptions, Usage
 from src.streaming_utils import is_assistant_content_chunk, make_sse, map_stop_reason, stream_chunks
@@ -80,14 +81,21 @@ def test_build_backend_options_disables_tools_and_adds_mcp_servers():
         public_model=DEFAULT_MODEL, backend="claude", provider_model=DEFAULT_MODEL
     )
 
-    with patch.object(
-        main, "get_mcp_servers", return_value={"demo": {"type": "stdio", "command": "demo"}}
+    from src.backends.claude.client import ClaudeCodeCLI
+
+    mock_cli = MagicMock()
+    mock_cli.build_options = ClaudeCodeCLI.build_options.__get__(mock_cli, type(mock_cli))
+    BackendRegistry.register("claude", mock_cli)
+
+    with patch(
+        "src.backends.claude.client.get_mcp_servers",
+        return_value={"demo": {"type": "stdio", "command": "demo"}},
     ):
         options = main._build_backend_options(request, resolved, {"max_turns": 9})
 
     assert options["model"] == DEFAULT_MODEL
     assert options["max_turns"] == 1
-    assert options["disallowed_tools"] == main.CLAUDE_TOOLS
+    assert options["disallowed_tools"] == CLAUDE_TOOLS
     assert options["mcp_servers"] == {"demo": {"type": "stdio", "command": "demo"}}
 
 
@@ -101,7 +109,13 @@ def test_build_backend_options_enables_tools():
         public_model=DEFAULT_MODEL, backend="claude", provider_model=DEFAULT_MODEL
     )
 
-    with patch.object(main, "get_mcp_servers", return_value={}):
+    from src.backends.claude.client import ClaudeCodeCLI
+
+    mock_cli = MagicMock()
+    mock_cli.build_options = ClaudeCodeCLI.build_options.__get__(mock_cli, type(mock_cli))
+    BackendRegistry.register("claude", mock_cli)
+
+    with patch("src.backends.claude.client.get_mcp_servers", return_value={}):
         options = main._build_backend_options(request, resolved)
 
     assert options["allowed_tools"] == main.DEFAULT_ALLOWED_TOOLS
@@ -199,7 +213,8 @@ async def test_lifespan_handles_auth_failure_timeout_and_debug_logging():
             return_value=(False, {"errors": ["missing auth"], "method": "none"}),
         ),
         patch.object(main, "get_mcp_servers", return_value={"demo": {"type": "stdio"}}),
-        patch.object(main.claude_cli, "verify_cli", AsyncMock(side_effect=asyncio.TimeoutError)),
+        patch.object(main, "discover_backends"),
+        patch.object(main, "_verify_backends", AsyncMock()),
         patch.object(main.session_manager, "start_cleanup_task") as start_cleanup,
         patch.object(main.session_manager, "async_shutdown", AsyncMock()) as async_shutdown,
     ):
@@ -859,6 +874,14 @@ def test_parse_response_id_rejects_invalid_formats(response_id):
 class TestBuildBackendOptionsWithHeaders:
     """Test _build_backend_options merges claude_headers into options."""
 
+    @staticmethod
+    def _register_mock_claude():
+        from src.backends.claude.client import ClaudeCodeCLI
+
+        mock_cli = MagicMock()
+        mock_cli.build_options = ClaudeCodeCLI.build_options.__get__(mock_cli, type(mock_cli))
+        BackendRegistry.register("claude", mock_cli)
+
     def test_headers_override_max_turns(self):
         request = ChatCompletionRequest(
             model="claude-sonnet-4-20250514",
@@ -872,7 +895,8 @@ class TestBuildBackendOptionsWithHeaders:
             provider_model="claude-sonnet-4-20250514",
         )
 
-        with patch.object(main, "get_mcp_servers", return_value={}):
+        self._register_mock_claude()
+        with patch("src.backends.claude.client.get_mcp_servers", return_value={}):
             options = main._build_backend_options(request, resolved, headers)
 
         # claude_headers should override the default max_turns
@@ -890,7 +914,8 @@ class TestBuildBackendOptionsWithHeaders:
             provider_model="claude-sonnet-4-20250514",
         )
 
-        with patch.object(main, "get_mcp_servers", return_value={}):
+        self._register_mock_claude()
+        with patch("src.backends.claude.client.get_mcp_servers", return_value={}):
             options = main._build_backend_options(request, resolved, None)
 
         # With tools disabled, max_turns is forced to 1
@@ -1055,6 +1080,11 @@ async def test_generate_streaming_response_with_include_usage():
             ),
         ),
         patch.object(main, "_validate_backend_auth"),
+        patch.object(
+            main,
+            "_build_backend_options",
+            return_value={"model": "claude-sonnet-4-20250514"},
+        ),
     ):
         lines = [line async for line in main.generate_streaming_response(request, "req-usage")]
 
@@ -1101,6 +1131,11 @@ async def test_generate_streaming_response_without_include_usage():
             ),
         ),
         patch.object(main, "_validate_backend_auth"),
+        patch.object(
+            main,
+            "_build_backend_options",
+            return_value={"model": "claude-sonnet-4-20250514"},
+        ),
     ):
         lines = [line async for line in main.generate_streaming_response(request, "req-no-usage")]
 

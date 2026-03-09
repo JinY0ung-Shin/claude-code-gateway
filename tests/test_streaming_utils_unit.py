@@ -1130,9 +1130,14 @@ class TestStripCollabJson:
         assert strip_collab_json(text) == text
 
     def test_handles_braces_in_json_strings(self):
-        collab = json.dumps({
-            "collab_tool_call": {"type": "wait", "agents_states": {"t1": {"message": "Found {3} files"}}}
-        })
+        collab = json.dumps(
+            {
+                "collab_tool_call": {
+                    "type": "wait",
+                    "agents_states": {"t1": {"message": "Found {3} files"}},
+                }
+            }
+        )
         text = f"Result: {collab} done."
         result = strip_collab_json(text)
         assert "collab_tool_call" not in result

@@ -24,12 +24,28 @@ def _cleanup_manager(manager):
         manager.sessions.clear()
 
 
+def register_all_descriptors():
+    """Register all backend descriptors (model metadata) so resolve_model() works.
+
+    Called automatically by ``reset_main_state`` and available for tests that
+    need descriptors before registering fake backends.
+    """
+    from src.backends.claude import CLAUDE_DESCRIPTOR
+    from src.backends.codex import CODEX_DESCRIPTOR
+
+    BackendRegistry.register_descriptor(CLAUDE_DESCRIPTOR)
+    BackendRegistry.register_descriptor(CODEX_DESCRIPTOR)
+
+
 @pytest.fixture(autouse=True)
 def reset_main_state():
     """Restore mutable module state and clean shared session state between tests."""
     original_debug = main.DEBUG_MODE
     original_runtime_api_key = main.runtime_api_key
     original_max_request_size = main.MAX_REQUEST_SIZE
+
+    # Register descriptors so resolve_model() works even after clear
+    register_all_descriptors()
 
     yield
 
@@ -181,6 +197,16 @@ class FakeCodexBackend:
             },
         }
 
+    def build_options(self, request, resolved, overrides=None):
+        """Minimal build_options for tests."""
+        options = request.to_claude_options() if hasattr(request, "to_claude_options") else {}
+        if overrides:
+            options.update(overrides)
+        if resolved.provider_model:
+            options["model"] = resolved.provider_model
+        options["permission_mode"] = "bypassPermissions"
+        return options
+
     def parse_message(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         return "codex reply"
 
@@ -196,7 +222,10 @@ class FakeCodexBackend:
 @pytest.fixture
 def fake_codex_backend():
     """Register a FakeCodexBackend and clean up after the test."""
+    from src.backends.codex import CODEX_DESCRIPTOR
+
     backend = FakeCodexBackend()
+    BackendRegistry.register_descriptor(CODEX_DESCRIPTOR)
     BackendRegistry.register("codex", backend)
     yield backend
     BackendRegistry.unregister("codex")
