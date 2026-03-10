@@ -364,8 +364,8 @@ async def test_responses_utility_error():
 async def test_http_streaming_e2e_with_mock_codex(mock_codex_bin, tmp_path, monkeypatch):
     """Full HTTP streaming: POST /v1/chat/completions?stream=true → SSE via mock Codex binary."""
     # Patch module-level constants so CodexCLI uses the mock binary
-    monkeypatch.setattr("src.codex_cli.CODEX_CLI_PATH", mock_codex_bin)
-    monkeypatch.setattr("src.codex_cli.CODEX_CONFIG_ISOLATION", True)
+    monkeypatch.setattr("src.backends.codex.client.CODEX_CLI_PATH", mock_codex_bin)
+    monkeypatch.setattr("src.backends.codex.client.CODEX_CONFIG_ISOLATION", True)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-e2e")
     monkeypatch.setenv("MOCK_CODEX_SCENARIO", "basic")
     monkeypatch.setenv("MOCK_CODEX_RESPONSE", "Hello from E2E")

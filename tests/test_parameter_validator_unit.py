@@ -31,8 +31,8 @@ class TestParameterValidatorValidateModel:
             assert "unknown-model-xyz" in str(mock_logger.warning.call_args)
 
     def test_all_known_models_valid(self):
-        """All models in SUPPORTED_MODELS are valid."""
-        for model in ParameterValidator.SUPPORTED_MODELS:
+        """All models in supported models set are valid."""
+        for model in ParameterValidator._get_supported_models():
             assert ParameterValidator.validate_model(model) is True
 
 

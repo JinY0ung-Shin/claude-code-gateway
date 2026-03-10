@@ -103,11 +103,11 @@ def integration_codex_cli(mock_codex_bin, tmp_path, monkeypatch):
     Uses monkeypatch on the module-level constant so the constructor's
     ``_find_codex_binary()`` returns our mock wrapper.
     """
-    monkeypatch.setattr("src.codex_cli.CODEX_CLI_PATH", mock_codex_bin)
-    monkeypatch.setattr("src.codex_cli.CODEX_CONFIG_ISOLATION", True)
+    monkeypatch.setattr("src.backends.codex.client.CODEX_CLI_PATH", mock_codex_bin)
+    monkeypatch.setattr("src.backends.codex.client.CODEX_CONFIG_ISOLATION", True)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-integration")
 
-    from src.codex_cli import CodexCLI
+    from src.backends.codex.client import CodexCLI
 
     return CodexCLI(timeout=5000, cwd=str(tmp_path))
 

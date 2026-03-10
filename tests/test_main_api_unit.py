@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import src.main as main
 from src.backend_registry import BackendRegistry
+from src.backends.claude.constants import CLAUDE_TOOLS
 from src.constants import DEFAULT_MODEL
 from src.models import SessionInfo
 
@@ -25,20 +26,27 @@ def client_context():
     mock_cli = MagicMock()
     mock_cli.verify_cli = AsyncMock(return_value=True)
     mock_cli.verify = AsyncMock(return_value=True)
+    # Use real Claude build_options so tests verify actual backend behavior
+    from src.backends.claude.client import ClaudeCodeCLI
+
+    mock_cli.build_options = ClaudeCodeCLI.build_options.__get__(mock_cli, type(mock_cli))
 
     if main.limiter and hasattr(main.limiter, "_storage"):
         main.limiter._storage.reset()
 
-    # Patch _init_backend_registry to prevent real Codex CLI registration,
+    # Patch discover_backends to prevent real backend registration,
     # then register mock_cli as the "claude" backend for backend dispatch.
-    def _mock_init_registry():
+    def _mock_discover():
+        from tests.conftest import register_all_descriptors
+
+        register_all_descriptors()
         BackendRegistry.register("claude", mock_cli)
 
     with (
-        patch.object(main, "_init_backend_registry", _mock_init_registry),
-        patch.object(main, "claude_cli", mock_cli),
+        patch.object(main, "discover_backends", _mock_discover),
         patch.object(main, "verify_api_key", new=AsyncMock(return_value=True)),
         patch.object(main, "validate_claude_code_auth", return_value=(True, {"method": "test"})),
+        patch.object(main, "_validate_backend_auth"),
         patch.object(main.session_manager, "start_cleanup_task"),
         patch.object(main.session_manager, "async_shutdown", new=AsyncMock()),
     ):
@@ -97,8 +105,9 @@ def test_chat_completions_non_streaming_success():
 
     with (
         client_context() as (client, mock_cli),
-        patch.object(
-            main, "get_mcp_servers", return_value={"demo": {"type": "stdio", "command": "demo"}}
+        patch(
+            "src.backends.claude.client.get_mcp_servers",
+            return_value={"demo": {"type": "stdio", "command": "demo"}},
         ),
     ):
         mock_cli.run_completion = fake_run_completion
@@ -124,7 +133,7 @@ def test_chat_completions_non_streaming_success():
     assert body["choices"][0]["finish_reason"] == "length"
     assert run_calls[0]["stream"] is False
     assert run_calls[0]["max_turns"] == 1
-    assert run_calls[0]["disallowed_tools"] == main.CLAUDE_TOOLS
+    assert run_calls[0]["disallowed_tools"] == CLAUDE_TOOLS
     assert run_calls[0]["system_prompt"] == "sys"
     assert run_calls[0]["mcp_servers"] == {"demo": {"type": "stdio", "command": "demo"}}
 
@@ -1632,11 +1641,18 @@ async def test_responses_truly_concurrent_lock_serialization(isolated_session_ma
     mock_cli.verify = AsyncMock(return_value=True)
     mock_cli.run_completion = slow_run_completion
     mock_cli.parse_message.return_value = "Lock holder wins"
+    mock_cli.build_options = MagicMock(
+        side_effect=lambda req, resolved, overrides=None: {
+            **(req.to_claude_options() if hasattr(req, "to_claude_options") else {}),
+            **(overrides or {}),
+            "model": resolved.provider_model,
+            "permission_mode": "bypassPermissions",
+        }
+    )
 
     BackendRegistry.register("claude", mock_cli)
 
     with (
-        patch.object(main, "claude_cli", mock_cli),
         patch.object(main, "verify_api_key", new=AsyncMock(return_value=True)),
         _bypass_codex_auth(),
         patch.object(main, "get_mcp_servers", return_value={}),

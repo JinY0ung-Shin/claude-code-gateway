@@ -59,6 +59,17 @@ def make_mock_run_completion(reply_text="response", error=None):
     return mock_run_completion, captured_kwargs
 
 
+def _attach_build_options(mock_backend):
+    """Attach real ClaudeCodeCLI.build_options to a mock and register it."""
+    from src.backends.base import BackendRegistry
+    from src.backends.claude.client import ClaudeCodeCLI
+
+    mock_backend.build_options = ClaudeCodeCLI.build_options.__get__(
+        mock_backend, type(mock_backend)
+    )
+    BackendRegistry.register("claude", mock_backend)
+
+
 @contextlib.contextmanager
 def mock_backend_dispatch(mock_run, parse_return="response"):
     """Context manager that patches _resolve_and_get_backend + _validate_backend_auth.
@@ -81,12 +92,15 @@ def mock_backend_dispatch(mock_run, parse_return="response"):
         backend="claude",
         provider_model=DEFAULT_MODEL,
     )
+    _attach_build_options(mock_backend)
+
     with (
         patch(
             "src.main._resolve_and_get_backend",
             return_value=(resolved, mock_backend),
         ),
         patch("src.main._validate_backend_auth"),
+        patch("src.backends.claude.client.get_mcp_servers", return_value={}),
     ):
         yield mock_backend
 
@@ -197,6 +211,8 @@ class TestSessionRouting:
 
         from src.backend_registry import ResolvedModel
 
+        _attach_build_options(mock_backend)
+
         with (
             patch(
                 "src.main._resolve_and_get_backend",
@@ -208,6 +224,7 @@ class TestSessionRouting:
                 ),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.backends.claude.client.get_mcp_servers", return_value={}),
         ):
             from src.main import generate_streaming_response
             from src.models import ChatCompletionRequest, Message
@@ -256,15 +273,14 @@ class TestAsyncShutdownIntegration:
                 "src.main.validate_claude_code_auth",
                 return_value=(True, {"method": "test"}),
             ):
-                with patch("src.main.claude_cli") as mock_cli:
-                    mock_cli.verify = AsyncMock(return_value=True)
+                with patch("src.main.discover_backends"):
+                    with patch("src.main._verify_backends", new_callable=AsyncMock):
+                        from src.main import lifespan, app
 
-                    from src.main import lifespan, app
+                        async with lifespan(app):
+                            pass
 
-                    async with lifespan(app):
-                        pass
-
-                    mock_sm.async_shutdown.assert_called_once()
+                        mock_sm.async_shutdown.assert_called_once()
 
 
 class TestNonStreamingSessionRequest:
@@ -297,6 +313,7 @@ class TestNonStreamingSessionRequest:
                 return_value=(resolved, mock_backend),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
             patch("src.main.verify_api_key", new_callable=AsyncMock),
         ):
             from src.main import app
@@ -360,6 +377,7 @@ class TestNonStreamingSessionRequest:
                 return_value=(resolved, mock_backend),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
             patch("src.main.verify_api_key", new_callable=AsyncMock),
         ):
             from src.main import app
@@ -416,6 +434,7 @@ class TestNonStreamingSessionRequest:
                 return_value=(resolved, mock_backend),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
             patch("src.main.verify_api_key", new_callable=AsyncMock),
         ):
             from src.main import app
@@ -561,6 +580,7 @@ class TestAssistantResponseStoredInSession:
                 return_value=(resolved, mock_backend),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
             patch("src.main.session_manager") as mock_sm,
         ):
             # get_or_create_session must return a mock session
@@ -617,6 +637,7 @@ class TestAssistantResponseStoredInSession:
                 return_value=(resolved, mock_backend),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
             patch("src.main.session_manager") as mock_sm,
         ):
             from src.main import generate_streaming_response
@@ -757,6 +778,7 @@ class TestMultipleSessionsIsolation:
                 return_value=(resolved, mock_backend),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
         ):
             from src.models import ChatCompletionRequest, Message
 
@@ -898,6 +920,7 @@ class TestMixedBackendSessionInvariant:
                 return_value=(codex_resolved, mock_codex_backend),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
         ):
             second_req = ChatCompletionRequest(
                 model="codex",
@@ -945,6 +968,7 @@ class TestMixedBackendSessionInvariant:
                 return_value=(codex_resolved, MagicMock()),
             ),
             patch.object(main, "_validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
             patch.object(main, "verify_api_key", new_callable=AsyncMock),
         ):
             from httpx import AsyncClient, ASGITransport
@@ -1017,6 +1041,7 @@ class TestConcurrentFirstTurnRace:
                 return_value=(resolved, mock_backend),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
         ):
             req_a = ChatCompletionRequest(
                 model=DEFAULT_MODEL,
@@ -1094,6 +1119,7 @@ class TestCodexProviderSessionIdFallback:
                 return_value=(codex_resolved, mock_codex_backend),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
         ):
             second_req = ChatCompletionRequest(
                 model="codex",
@@ -1171,6 +1197,7 @@ class TestCodex409GuardSessionPollution:
                 return_value=(codex_resolved, mock_codex),
             ),
             patch("src.main._validate_backend_auth"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
         ):
             req = ChatCompletionRequest(
                 model="codex",
@@ -1206,7 +1233,8 @@ class TestCodex409GuardSessionPollution:
                 return_value=(codex_resolved, mock_codex),
             ),
             patch("src.main._validate_backend_auth"),
-            patch("src.main._init_backend_registry"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
+            patch("src.main.discover_backends"),
             patch("src.main._verify_backends"),
             patch.object(main, "verify_api_key", new=AsyncMock(return_value=True)),
             patch.object(
@@ -1261,7 +1289,8 @@ class TestStreamingPreflightHTTPStatus:
                 return_value=(claude_resolved, mock_backend),
             ),
             patch("src.main._validate_backend_auth"),
-            patch("src.main._init_backend_registry"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
+            patch("src.main.discover_backends"),
             patch("src.main._verify_backends"),
             patch.object(main, "verify_api_key", new=AsyncMock(return_value=True)),
             patch.object(
@@ -1306,7 +1335,8 @@ class TestStreamingPreflightHTTPStatus:
                 return_value=(codex_resolved, mock_backend),
             ),
             patch("src.main._validate_backend_auth"),
-            patch("src.main._init_backend_registry"),
+            patch("src.main._build_backend_options", return_value={"model": "sonnet"}),
+            patch("src.main.discover_backends"),
             patch("src.main._verify_backends"),
             patch.object(main, "verify_api_key", new=AsyncMock(return_value=True)),
             patch.object(

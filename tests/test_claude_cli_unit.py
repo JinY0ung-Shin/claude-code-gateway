@@ -400,7 +400,7 @@ class TestClaudeCodeCLIVerifyCLI:
         async def mock_query(*args, **kwargs):
             yield mock_message
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             result = await cli_instance.verify_cli()
             assert result is True
 
@@ -412,7 +412,7 @@ class TestClaudeCodeCLIVerifyCLI:
             return
             yield  # Make it a generator but yield nothing
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             result = await cli_instance.verify_cli()
             assert result is False
 
@@ -424,7 +424,7 @@ class TestClaudeCodeCLIVerifyCLI:
             raise RuntimeError("SDK error")
             yield  # Make it a generator
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             result = await cli_instance.verify_cli()
             assert result is False
 
@@ -440,7 +440,7 @@ class TestClaudeCodeCLIRunCompletion:
         async def mock_query(*args, **kwargs):
             yield mock_message
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             messages = []
             async for msg in cli_instance.run_completion("Hello"):
                 messages.append(msg)
@@ -458,7 +458,7 @@ class TestClaudeCodeCLIRunCompletion:
             captured_options.append(options)
             yield mock_message
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             async for _ in cli_instance.run_completion("Hello", system_prompt="You are helpful"):
                 pass
 
@@ -476,7 +476,7 @@ class TestClaudeCodeCLIRunCompletion:
             captured_options.append(options)
             yield mock_message
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             async for _ in cli_instance.run_completion("Hello", model="claude-3-opus"):
                 pass
 
@@ -492,7 +492,7 @@ class TestClaudeCodeCLIRunCompletion:
             captured_options.append(options)
             yield mock_message
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             async for _ in cli_instance.run_completion(
                 "Hello",
                 allowed_tools=["Bash", "Read"],
@@ -513,7 +513,7 @@ class TestClaudeCodeCLIRunCompletion:
             captured_options.append(options)
             yield mock_message
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             async for _ in cli_instance.run_completion("Hello", permission_mode="acceptEdits"):
                 pass
 
@@ -529,7 +529,7 @@ class TestClaudeCodeCLIRunCompletion:
             captured_options.append(options)
             yield mock_message
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             async for _ in cli_instance.run_completion("Hello", session_id="sess-123"):
                 pass
 
@@ -545,7 +545,7 @@ class TestClaudeCodeCLIRunCompletion:
             captured_options.append(options)
             yield mock_message
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             async for _ in cli_instance.run_completion("Hello", resume="sess-123"):
                 pass
 
@@ -562,7 +562,7 @@ class TestClaudeCodeCLIRunCompletion:
         async def mock_query(*args, **kwargs):
             yield mock_obj
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             messages = []
             async for msg in cli_instance.run_completion("Hello"):
                 messages.append(msg)
@@ -580,7 +580,7 @@ class TestClaudeCodeCLIRunCompletion:
             raise RuntimeError("SDK failed")
             yield  # Make it a generator
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             messages = []
             async for msg in cli_instance.run_completion("Hello"):
                 messages.append(msg)
@@ -602,7 +602,7 @@ class TestClaudeCodeCLIRunCompletion:
         async def mock_query(*args, **kwargs):
             yield mock_message
 
-        with patch("src.claude_cli.query", mock_query):
+        with patch("src.backends.claude.client.query", mock_query):
             async for _ in cli_instance.run_completion("Hello"):
                 pass
 
@@ -661,27 +661,27 @@ class TestBuildSdkOptions:
 
     def test_thinking_mode_adaptive(self, cli_instance):
         """Adaptive thinking mode sets type=adaptive."""
-        with patch("src.claude_cli.THINKING_MODE", "adaptive"):
+        with patch("src.backends.claude.client.THINKING_MODE", "adaptive"):
             opts = cli_instance._build_sdk_options()
             assert opts.thinking == {"type": "adaptive"}
 
     def test_thinking_mode_enabled(self, cli_instance):
         """Enabled thinking mode sets type=enabled with budget."""
-        with patch("src.claude_cli.THINKING_MODE", "enabled"):
-            with patch("src.claude_cli.THINKING_BUDGET_TOKENS", 5000):
+        with patch("src.backends.claude.client.THINKING_MODE", "enabled"):
+            with patch("src.backends.claude.client.THINKING_BUDGET_TOKENS", 5000):
                 opts = cli_instance._build_sdk_options()
                 assert opts.thinking == {"type": "enabled", "budget_tokens": 5000}
 
     def test_thinking_mode_disabled(self, cli_instance):
         """Disabled thinking mode does not set thinking attr."""
-        with patch("src.claude_cli.THINKING_MODE", "disabled"):
+        with patch("src.backends.claude.client.THINKING_MODE", "disabled"):
             opts = cli_instance._build_sdk_options()
             assert not hasattr(opts, "thinking") or opts.thinking is None
 
     def test_thinking_mode_unrecognized_logs_warning(self, cli_instance):
         """Unrecognized thinking mode logs warning and does not set thinking."""
-        with patch("src.claude_cli.THINKING_MODE", "bogus"):
-            with patch("src.claude_cli.logger") as mock_logger:
+        with patch("src.backends.claude.client.THINKING_MODE", "bogus"):
+            with patch("src.backends.claude.client.logger") as mock_logger:
                 opts = cli_instance._build_sdk_options()
                 mock_logger.warning.assert_called_once()
                 assert "bogus" in mock_logger.warning.call_args[0][0]
@@ -689,13 +689,13 @@ class TestBuildSdkOptions:
 
     def test_include_partial_messages_when_token_streaming(self, cli_instance):
         """TOKEN_STREAMING=True sets include_partial_messages."""
-        with patch("src.claude_cli.TOKEN_STREAMING", True):
+        with patch("src.backends.claude.client.TOKEN_STREAMING", True):
             opts = cli_instance._build_sdk_options()
             assert opts.include_partial_messages is True
 
     def test_no_partial_messages_when_token_streaming_off(self, cli_instance):
         """TOKEN_STREAMING=False does not set include_partial_messages."""
-        with patch("src.claude_cli.TOKEN_STREAMING", False):
+        with patch("src.backends.claude.client.TOKEN_STREAMING", False):
             opts = cli_instance._build_sdk_options()
             assert not getattr(opts, "include_partial_messages", False)
 
@@ -928,7 +928,7 @@ class TestConfigureHelpers:
         from claude_agent_sdk import ClaudeAgentOptions
 
         opts = ClaudeAgentOptions(max_turns=1, cwd=cli_instance.cwd)
-        with patch("src.claude_cli.THINKING_MODE", "adaptive"):
+        with patch("src.backends.claude.client.THINKING_MODE", "adaptive"):
             cli_instance._configure_thinking(opts)
         assert opts.thinking == {"type": "adaptive"}
 
@@ -937,8 +937,8 @@ class TestConfigureHelpers:
         from claude_agent_sdk import ClaudeAgentOptions
 
         opts = ClaudeAgentOptions(max_turns=1, cwd=cli_instance.cwd)
-        with patch("src.claude_cli.THINKING_MODE", "enabled"):
-            with patch("src.claude_cli.THINKING_BUDGET_TOKENS", 8000):
+        with patch("src.backends.claude.client.THINKING_MODE", "enabled"):
+            with patch("src.backends.claude.client.THINKING_BUDGET_TOKENS", 8000):
                 cli_instance._configure_thinking(opts)
         assert opts.thinking == {"type": "enabled", "budget_tokens": 8000}
 
@@ -947,7 +947,7 @@ class TestConfigureHelpers:
         from claude_agent_sdk import ClaudeAgentOptions
 
         opts = ClaudeAgentOptions(max_turns=1, cwd=cli_instance.cwd)
-        with patch("src.claude_cli.THINKING_MODE", "disabled"):
+        with patch("src.backends.claude.client.THINKING_MODE", "disabled"):
             cli_instance._configure_thinking(opts)
         assert not hasattr(opts, "thinking") or opts.thinking is None
 
@@ -965,7 +965,9 @@ class TestConfigureHelpers:
         from claude_agent_sdk import ClaudeAgentOptions
 
         opts = ClaudeAgentOptions(max_turns=1, cwd=cli_instance.cwd)
-        with patch("src.claude_cli.DISALLOWED_SUBAGENT_TYPES", ["Agent(statusline-setup)"]):
+        with patch(
+            "src.backends.claude.client.DISALLOWED_SUBAGENT_TYPES", ["Agent(statusline-setup)"]
+        ):
             cli_instance._configure_tools(opts, None, None)
         # allowed_tools should be unchanged (SDK default, not set by _configure_tools)
         assert opts.allowed_tools == [] or opts.allowed_tools is None

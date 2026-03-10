@@ -28,7 +28,6 @@ from src.models import (
     AnthropicTextBlock,
     AnthropicUsage,
 )
-from src.claude_cli import ClaudeCodeCLI
 from src.landing_page import build_root_page
 from src.message_adapter import MessageAdapter
 from src.auth import (
@@ -42,7 +41,14 @@ from src.auth import (
 )
 from src.parameter_validator import ParameterValidator, CompatibilityReporter
 from src.session_manager import session_manager
-from src.backend_registry import BackendClient, BackendRegistry, resolve_model, ResolvedModel
+from src.backends import (
+    BackendClient,
+    BackendConfigError,
+    BackendRegistry,
+    resolve_model,
+    ResolvedModel,
+    discover_backends,
+)
 from src.response_models import (
     ResponseCreateRequest,
     ResponseErrorDetail,
@@ -57,8 +63,6 @@ from src.rate_limiter import (
     rate_limit_endpoint,
 )
 from src.constants import (
-    CLAUDE_TOOLS,
-    DEFAULT_ALLOWED_TOOLS,
     DEFAULT_TIMEOUT_MS,
     DEFAULT_PORT,
     DEFAULT_HOST,
@@ -66,6 +70,7 @@ from src.constants import (
     MAX_REQUEST_SIZE,
     PERMISSION_MODE_BYPASS,
 )
+from src.backends.claude.constants import DEFAULT_ALLOWED_TOOLS
 from src.mcp_config import get_mcp_servers
 from src import streaming_utils
 
@@ -147,30 +152,8 @@ def prompt_for_api_protection() -> Optional[str]:
             return None
 
 
-# Initialize Claude CLI
-claude_cli = ClaudeCodeCLI(timeout=DEFAULT_TIMEOUT_MS, cwd=os.getenv("CLAUDE_CWD"))
-
-
-def _init_backend_registry() -> None:
-    """Register backend clients into the global BackendRegistry.
-
-    Called once during lifespan startup.  Both Claude and Codex are always
-    registered.  If the Codex binary is missing, registration fails gracefully.
-    """
-    # Claude — always registered
-    BackendRegistry.register("claude", claude_cli)
-    logger.info("Registered backend: claude")
-
-    # Codex — always attempted (fails gracefully if binary missing)
-    try:
-        from src.codex_cli import CodexCLI
-
-        codex_cli = CodexCLI(cwd=os.getenv("CLAUDE_CWD"))
-        BackendRegistry.register("codex", codex_cli)
-        logger.info("Registered backend: codex")
-    except Exception as e:
-        logger.warning(f"Codex backend registration failed: {e}")
-        logger.warning("Codex models will not be available. Check CODEX_CLI_PATH and installation.")
+# Note: claude_cli is now created inside discover_backends() and registered
+# in the BackendRegistry. Access it via BackendRegistry.get("claude").
 
 
 async def _verify_backends() -> None:
@@ -210,8 +193,8 @@ async def lifespan(app: FastAPI):
     else:
         logger.info(f"✅ Claude Code authentication validated: {auth_info['method']}")
 
-    # Register backends
-    _init_backend_registry()
+    # Discover and register backends
+    discover_backends()
 
     # Verify all registered backends
     await _verify_backends()
@@ -497,48 +480,16 @@ def _build_backend_options(
     resolved: ResolvedModel,
     claude_headers: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build backend-agnostic options from request, resolved model, and headers."""
-    options = request.to_claude_options()
+    """Build backend-agnostic options from request, resolved model, and headers.
 
-    if claude_headers:
-        options.update(claude_headers)
-
-    # Use the provider model from resolution (may differ from request.model)
-    if resolved.provider_model:
-        options["model"] = resolved.provider_model
-
-    if options.get("model"):
-        ParameterValidator.validate_model(options["model"])
-
-    if resolved.backend == "claude":
-        # Claude-specific tool configuration
-        if not request.enable_tools:
-            options["disallowed_tools"] = CLAUDE_TOOLS
-            options["max_turns"] = 1
-            logger.debug("Tools disabled (default behavior for OpenAI compatibility)")
-        else:
-            options["allowed_tools"] = DEFAULT_ALLOWED_TOOLS
-            options["permission_mode"] = PERMISSION_MODE_BYPASS
-            logger.debug(f"Tools enabled by user request: {DEFAULT_ALLOWED_TOOLS}")
-
-        # Add MCP servers if configured (Claude only)
-        mcp_servers = get_mcp_servers()
-        if mcp_servers:
-            options["mcp_servers"] = mcp_servers
-            logger.debug(f"MCP servers enabled: {list(mcp_servers.keys())}")
-    else:
-        # Non-Claude backends: basic permission mode
-        options["permission_mode"] = PERMISSION_MODE_BYPASS
-        if not request.enable_tools:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Codex backend does not support disabling tools. "
-                    "Remove enable_tools=false or use the Claude backend."
-                ),
-            )
-
-    return options
+    Delegates to the backend's ``build_options()`` method and translates
+    ``BackendConfigError`` into ``HTTPException``.
+    """
+    backend = BackendRegistry.get(resolved.backend)
+    try:
+        return backend.build_options(request, resolved, overrides=claude_headers)
+    except BackendConfigError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
 
 
 def _process_chunk_content(chunk: Dict[str, Any], content_sent: bool = False):
@@ -1119,9 +1070,10 @@ async def anthropic_messages(
 
         # Run Claude Code - tools enabled by default for Anthropic SDK clients
         # (they're typically using this for agentic workflows)
+        claude_backend = BackendRegistry.get("claude")
         mcp_servers = get_mcp_servers() or None
         chunks = []
-        async for chunk in claude_cli.run_completion(
+        async for chunk in claude_backend.run_completion(
             prompt=prompt,
             system_prompt=system_prompt,
             model=request_body.model,
@@ -1134,7 +1086,7 @@ async def anthropic_messages(
             chunks.append(chunk)
 
         # Extract assistant message
-        raw_assistant_content = claude_cli.parse_message(chunks)
+        raw_assistant_content = claude_backend.parse_message(chunks)
 
         if not raw_assistant_content:
             raise HTTPException(status_code=500, detail="No response from Claude Code")
