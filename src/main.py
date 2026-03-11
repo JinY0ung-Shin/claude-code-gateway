@@ -868,8 +868,15 @@ async def generate_streaming_response(
 
         # Stream chunks using shared SSE logic
         chunks_buffer = []
-        async for sse_line in _stream_chunks(chunk_source, request, request_id, chunks_buffer):
-            yield sse_line
+        try:
+            async for sse_line in _stream_chunks(chunk_source, request, request_id, chunks_buffer):
+                yield sse_line
+        finally:
+            # Close the SDK generator in the same task that iterated it.
+            # The SDK uses anyio cancel scopes internally; closing from a
+            # different task (e.g. Starlette response teardown) causes
+            # "Attempted to exit cancel scope in a different task".
+            await chunk_source.aclose()
 
         # Capture provider session id (e.g. Codex thread_id) from meta-events
         if session is not None:
@@ -1666,18 +1673,25 @@ async def create_response(
             try:
                 chunks_buffer = []
                 chunk_source = backend.run_completion(**preflight["chunk_kwargs"])
-                async for line in streaming_utils.stream_response_chunks(
-                    chunk_source=chunk_source,
-                    model=body.model,
-                    response_id=resp_id,
-                    output_item_id=output_item_id,
-                    chunks_buffer=chunks_buffer,
-                    logger=logger,
-                    prompt_text=prompt,
-                    metadata=body.metadata or {},
-                    stream_result=stream_result,
-                ):
-                    yield line
+                try:
+                    async for line in streaming_utils.stream_response_chunks(
+                        chunk_source=chunk_source,
+                        model=body.model,
+                        response_id=resp_id,
+                        output_item_id=output_item_id,
+                        chunks_buffer=chunks_buffer,
+                        logger=logger,
+                        prompt_text=prompt,
+                        metadata=body.metadata or {},
+                        stream_result=stream_result,
+                    ):
+                        yield line
+                finally:
+                    # Close the SDK generator in the same task that iterated it.
+                    # The SDK uses anyio cancel scopes internally; closing from a
+                    # different task (e.g. Starlette response teardown) causes
+                    # "Attempted to exit cancel scope in a different task".
+                    await chunk_source.aclose()
 
                 # ALWAYS capture provider_session_id (even on failure).
                 # On failure, this is internal-only: no response_id is committed for the
