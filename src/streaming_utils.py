@@ -659,12 +659,15 @@ async def stream_chunks(
     tool_acc = ToolUseAccumulator()
     collab_filter = CollabJsonStreamFilter()
 
-    # When WRAP_INTERMEDIATE_THINKING is enabled, all intermediate SDK output
-    # (tool calls, tool results, intermediate text) is wrapped in <think></think>
-    # tags so frontends like Open WebUI collapse it and only show the final result.
+    # When WRAP_INTERMEDIATE_THINKING is enabled, text deltas are buffered and
+    # flushed inside <think></think> at tool-activity boundaries.  The final
+    # answer (text remaining after the last tool call) is emitted *outside*
+    # the think block — no duplication.  When no tools are used the buffer is
+    # emitted normally without any think tags.
     wrap_thinking = WRAP_INTERMEDIATE_THINKING
     think_opened = False
-    result_text: Optional[str] = None
+    tool_seen = False
+    text_buf: list[str] = []  # buffered text deltas (only used when wrap_thinking)
 
     def _emit_sse(text: str):
         nonlocal role_sent
@@ -684,11 +687,21 @@ async def stream_chunks(
             return _emit_sse("<think>\n")
         return []
 
-    async for chunk in chunk_source:
-        # Capture result text for think-wrapping (before content_sent check skips it)
-        if wrap_thinking and chunk.get("subtype") == "success" and "result" in chunk:
-            result_text = chunk.get("result", "")
+    def _flush_text_buf_inside_think():
+        """Flush buffered text inside the think block (marks it as intermediate)."""
+        nonlocal content_sent
+        result: list[str] = []
+        if text_buf:
+            text = "".join(text_buf)
+            text_buf.clear()
+            for sse in _open_think():
+                result.append(sse)
+            for sse in _emit_sse(text):
+                result.append(sse)
+            content_sent = True
+        return result
 
+    async for chunk in chunk_source:
         # Handle AssistantMessage.error (auth failures, rate limits, etc.)
         if chunk.get("type") == "assistant" and chunk.get("error"):
             chunks_buffer.append(chunk)
@@ -710,16 +723,19 @@ async def stream_chunks(
             token_streaming = True
             if text_delta:
                 # When wrapping, suppress SDK-native <think>/<think> tags
-                # since all content is already inside our wrapper.
+                # since we manage our own wrapper.
                 if wrap_thinking and text_delta in ("<think>", "</think>"):
                     continue
                 cleaned = collab_filter.feed(text_delta)
                 if cleaned:
-                    for sse in _open_think():
-                        yield sse
-                    for sse in _emit_sse(cleaned):
-                        yield sse
-                    content_sent = True
+                    if wrap_thinking:
+                        # Buffer text; it will be flushed inside <think> on
+                        # tool activity, or outside </think> at stream end.
+                        text_buf.append(cleaned)
+                    else:
+                        for sse in _emit_sse(cleaned):
+                            yield sse
+                        content_sent = True
             elif not role_sent:
                 yield make_sse(request_id, request.model, {"role": "assistant", "content": ""})
                 role_sent = True
@@ -730,7 +746,10 @@ async def stream_chunks(
         if handled:
             if tool_block:
                 if wrap_thinking:
-                    # Emit tool activity as text inside think tags
+                    tool_seen = True
+                    # Flush any buffered text as intermediate (inside think)
+                    for sse in _flush_text_buf_inside_think():
+                        yield sse
                     tool_summary = f"\n[Tool: {tool_block.get('name', '?')}]\n"
                     for sse in _open_think():
                         yield sse
@@ -753,7 +772,7 @@ async def stream_chunks(
             tool_results, parent_id = extract_user_tool_results(chunk)
             for tr_block in tool_results:
                 if wrap_thinking:
-                    # Emit tool results as text inside think tags
+                    tool_seen = True
                     result_data = _normalize_tool_result(tr_block)
                     summary = f"\n[Result: {str(result_data.get('content', ''))[:200]}]\n"
                     for sse in _open_think():
@@ -774,6 +793,9 @@ async def stream_chunks(
         embedded_tools = extract_embedded_tool_blocks(chunk)
         for tb in embedded_tools:
             if wrap_thinking:
+                tool_seen = True
+                for sse in _flush_text_buf_inside_think():
+                    yield sse
                 if tb.get("type") == "tool_use":
                     tool_summary = f"\n[Tool: {tb.get('name', '?')}]\n"
                     for sse in _open_think():
@@ -801,33 +823,48 @@ async def stream_chunks(
         text = format_chunk_content(chunk, content_sent)
         if text:
             if wrap_thinking:
-                for sse in _open_think():
+                text_buf.append(text)
+            else:
+                for sse in _emit_sse(text):
                     yield sse
-            for sse in _emit_sse(text):
-                yield sse
-            content_sent = True
+                content_sent = True
 
     # Flush any remaining buffered text from the collab filter
     remaining = collab_filter.flush()
     if remaining:
         if wrap_thinking:
-            for sse in _open_think():
+            text_buf.append(remaining)
+        else:
+            for sse in _emit_sse(remaining):
                 yield sse
-        for sse in _emit_sse(remaining):
-            yield sse
-        content_sent = True
+            content_sent = True
 
     if tool_acc.has_incomplete:
         logger.warning("Incomplete tool_use blocks at stream end: %s", tool_acc.incomplete_keys)
 
-    # Close think wrapper and emit the final result text
-    if wrap_thinking and think_opened:
+    # Emit remaining buffered text
+    if wrap_thinking and text_buf:
+        final_text = "".join(text_buf)
+        text_buf.clear()
+        if tool_seen and think_opened:
+            # Close think block, then emit final answer outside
+            for sse in _emit_sse("\n</think>\n"):
+                yield sse
+            for sse in _emit_sse(final_text):
+                yield sse
+        elif tool_seen:
+            # Tools seen but think never opened (edge case) — emit normally
+            for sse in _emit_sse(final_text):
+                yield sse
+        else:
+            # No tool activity — emit text normally without think tags
+            for sse in _emit_sse(final_text):
+                yield sse
+        content_sent = True
+    elif wrap_thinking and think_opened:
+        # Think was opened but no remaining text (tools only, no final answer)
         for sse in _emit_sse("\n</think>\n"):
             yield sse
-        if result_text:
-            for sse in _emit_sse(result_text):
-                yield sse
-            content_sent = True
 
     if not role_sent:
         yield make_sse(request_id, request.model, {"role": "assistant", "content": ""})

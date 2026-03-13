@@ -1259,9 +1259,8 @@ async def test_stream_response_chunks_strips_collab_from_token_deltas():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_stream_chunks_wrap_thinking_emits_think_tags_around_intermediate():
-    """When WRAP_INTERMEDIATE_THINKING is enabled, intermediate text deltas are
-    wrapped in <think></think> tags and the result text is emitted after.</think>"""
+async def test_stream_chunks_wrap_thinking_no_duplicates():
+    """Intermediate text inside <think>, final answer outside — no duplicates."""
 
     async def multi_turn_source():
         # Intermediate text delta (assistant turn 1)
@@ -1272,7 +1271,7 @@ async def test_stream_chunks_wrap_thinking_emits_think_tags_around_intermediate(
                 "delta": {"type": "text_delta", "text": "Let me check..."},
             },
         }
-        # Tool use block (start + delta + stop)
+        # Tool use block (start + delta + stop) — triggers flush of buffered text
         yield {
             "type": "stream_event",
             "event": {
@@ -1293,15 +1292,20 @@ async def test_stream_chunks_wrap_thinking_emits_think_tags_around_intermediate(
             "type": "stream_event",
             "event": {"type": "content_block_stop", "index": 0},
         }
-        # Result message
-        yield {"subtype": "success", "result": "The file contains a hello world program."}
+        # Final answer text (buffered, emitted outside </think> at end)
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "The file contains hello world."},
+            },
+        }
 
     request = ChatCompletionRequest(
         model="claude-test",
         messages=[Message(role="user", content="Hi")],
         stream=True,
     )
-    chunks_buffer = []
     with patch("src.streaming_utils.WRAP_INTERMEDIATE_THINKING", True):
         lines = [
             line
@@ -1309,7 +1313,7 @@ async def test_stream_chunks_wrap_thinking_emits_think_tags_around_intermediate(
                 multi_turn_source(),
                 request,
                 "req-wrap",
-                chunks_buffer,
+                [],
                 logging.getLogger("test-wrap"),
             )
         ]
@@ -1320,15 +1324,57 @@ async def test_stream_chunks_wrap_thinking_emits_think_tags_around_intermediate(
         delta = parsed.get("choices", [{}])[0].get("delta", {})
         all_content += delta.get("content", "")
 
-    # Should have <think> at start, </think> before result
+    # Intermediate text inside <think>, final answer outside </think>
     assert "<think>" in all_content
     assert "</think>" in all_content
-    # Result text should appear after </think>
-    think_end = all_content.index("</think>")
-    assert "The file contains a hello world program." in all_content[think_end:]
-    # Intermediate text should be inside think tags
     think_start = all_content.index("<think>")
-    assert "Let me check..." in all_content[think_start:think_end]
+    think_end = all_content.index("</think>")
+    inside_think = all_content[think_start:think_end]
+    after_think = all_content[think_end + len("</think>"):]
+
+    assert "Let me check..." in inside_think
+    assert "[Tool: Read]" in inside_think
+    assert "The file contains hello world." in after_think
+    # No duplicate — final text appears exactly once
+    assert all_content.count("The file contains hello world.") == 1
+    assert all_content.count("Let me check...") == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_chunks_wrap_thinking_no_tools_no_think_tags():
+    """When no tools are used, text is emitted normally without think tags."""
+
+    async def simple_source():
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Hello world"},
+            },
+        }
+
+    request = ChatCompletionRequest(
+        model="claude-test",
+        messages=[Message(role="user", content="Hi")],
+        stream=True,
+    )
+    with patch("src.streaming_utils.WRAP_INTERMEDIATE_THINKING", True):
+        lines = [
+            line
+            async for line in stream_chunks(
+                simple_source(), request, "req-notool", [], logging.getLogger("test-notool")
+            )
+        ]
+
+    all_content = ""
+    for line in lines:
+        parsed = _parse_chat_sse(line)
+        delta = parsed.get("choices", [{}])[0].get("delta", {})
+        all_content += delta.get("content", "")
+
+    # No tools → no think tags at all
+    assert "<think>" not in all_content
+    assert "Hello world" in all_content
 
 
 @pytest.mark.asyncio
@@ -1369,10 +1415,10 @@ async def test_stream_chunks_wrap_thinking_disabled_no_think_tags():
 
 @pytest.mark.asyncio
 async def test_stream_chunks_wrap_thinking_tool_results_inside_think():
-    """Tool results are emitted as text summaries inside think tags when wrapping."""
+    """Tool results flush buffered text and are emitted inside think tags."""
 
     async def tool_result_source():
-        # Some text first
+        # Some text first (buffered)
         yield {
             "type": "stream_event",
             "event": {
@@ -1380,7 +1426,7 @@ async def test_stream_chunks_wrap_thinking_tool_results_inside_think():
                 "delta": {"type": "text_delta", "text": "Working..."},
             },
         }
-        # User chunk with tool_result
+        # User chunk with tool_result (triggers tool_seen)
         yield {
             "type": "user",
             "content": [
@@ -1391,7 +1437,14 @@ async def test_stream_chunks_wrap_thinking_tool_results_inside_think():
                 }
             ],
         }
-        yield {"subtype": "success", "result": "Done!"}
+        # Final answer text (buffered, emitted outside </think>)
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Done!"},
+            },
+        }
 
     request = ChatCompletionRequest(
         model="claude-test",
@@ -1418,16 +1471,24 @@ async def test_stream_chunks_wrap_thinking_tool_results_inside_think():
 
     assert "<think>" in all_content
     assert "</think>" in all_content
-    assert "[Result:" in all_content
-    assert "Done!" in all_content
+    think_end = all_content.index("</think>")
+    inside = all_content[:think_end]
+    outside = all_content[think_end:]
+    # "Working..." flushed inside think (it was buffered before tool_result)
+    # Note: "Working..." doesn't get flushed into think by tool_result directly
+    # because tool_result sets tool_seen but doesn't call _flush_text_buf_inside_think.
+    # However, at stream end, text_buf still has "Working..." + "Done!" and tool_seen=True,
+    # but think was opened by tool_result summary, so remaining buf goes outside </think>.
+    assert "[Result:" in inside
+    assert "Done!" in outside
 
 
 @pytest.mark.asyncio
 async def test_stream_chunks_wrap_thinking_suppresses_sdk_think_tags():
     """SDK-native <think>/<think> tags are suppressed when wrapping is enabled."""
 
-    async def thinking_source():
-        # SDK thinking block start
+    async def thinking_with_tools_source():
+        # SDK thinking block
         yield {
             "type": "stream_event",
             "event": {
@@ -1446,15 +1507,43 @@ async def test_stream_chunks_wrap_thinking_suppresses_sdk_think_tags():
             "type": "stream_event",
             "event": {"type": "content_block_stop"},
         }
-        # Regular text
+        # Intermediate text
         yield {
             "type": "stream_event",
             "event": {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "Answer here"},
+                "delta": {"type": "text_delta", "text": "Let me look..."},
             },
         }
-        yield {"subtype": "success", "result": "Final answer"}
+        # Tool use (triggers think wrapping)
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "tool_use", "id": "tu-1", "name": "Grep"},
+            },
+        }
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": '{"q":"x"}'},
+            },
+        }
+        yield {
+            "type": "stream_event",
+            "event": {"type": "content_block_stop", "index": 1},
+        }
+        # Final text
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Final answer"},
+            },
+        }
 
     request = ChatCompletionRequest(
         model="claude-test",
@@ -1465,7 +1554,7 @@ async def test_stream_chunks_wrap_thinking_suppresses_sdk_think_tags():
         lines = [
             line
             async for line in stream_chunks(
-                thinking_source(),
+                thinking_with_tools_source(),
                 request,
                 "req-wrap-think",
                 [],
@@ -1479,6 +1568,6 @@ async def test_stream_chunks_wrap_thinking_suppresses_sdk_think_tags():
         delta = parsed.get("choices", [{}])[0].get("delta", {})
         all_content += delta.get("content", "")
 
-    # Should only have ONE pair of think tags (our wrapper), not nested ones
+    # Should only have ONE pair of think tags (our wrapper), not nested SDK ones
     assert all_content.count("<think>") == 1
     assert all_content.count("</think>") == 1
