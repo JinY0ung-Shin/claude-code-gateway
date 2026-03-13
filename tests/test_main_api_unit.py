@@ -258,7 +258,7 @@ def test_anthropic_messages_success():
     assert body["content"][0]["text"] == "Anthropic answer"
     assert body["stop_reason"] == "end_turn"
     assert run_calls[0]["prompt"] == "Assistant: Earlier reply\n\nWhat now?"
-    assert run_calls[0]["allowed_tools"] == main.DEFAULT_ALLOWED_TOOLS
+    assert run_calls[0]["allowed_tools"] == main.DEFAULT_ALLOWED_TOOLS + ["mcp__demo__*"]
     assert run_calls[0]["permission_mode"] == main.PERMISSION_MODE_BYPASS
     assert run_calls[0]["mcp_servers"] == {"demo": {"type": "stdio"}}
 
