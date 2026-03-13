@@ -1255,15 +1255,81 @@ async def test_stream_response_chunks_strips_collab_from_token_deltas():
 
 
 # ---------------------------------------------------------------------------
-# WRAP_INTERMEDIATE_THINKING tests
+# SentinelStreamFilter tests
 # ---------------------------------------------------------------------------
 
+from src.streaming_utils import SentinelStreamFilter  # noqa: E402
+
+
+class TestSentinelStreamFilter:
+    """Test SentinelStreamFilter cross-chunk sentinel detection."""
+
+    def test_sentinel_in_single_chunk(self):
+        sf = SentinelStreamFilter("<final_response>", replacement="</think>\n")
+        text, triggered = sf.feed("before<final_response>after")
+        assert triggered is True
+        assert text == "before</think>\nafter"
+        assert sf.triggered is True
+
+    def test_sentinel_across_two_chunks(self):
+        sf = SentinelStreamFilter("<final_response>", replacement="[END]")
+        t1, tr1 = sf.feed("hello<final_")
+        assert tr1 is False
+        assert "hello" in t1
+        t2, tr2 = sf.feed("response>world")
+        assert tr2 is True
+        assert "world" in t2
+        assert "[END]" in (t1 + t2)
+
+    def test_sentinel_across_many_chunks(self):
+        sf = SentinelStreamFilter("<final_response>", replacement="X")
+        parts = []
+        for ch in "<final_response>done":
+            t, tr = sf.feed(ch)
+            parts.append(t)
+        combined = "".join(parts)
+        assert "X" in combined
+        assert "done" in combined
+        assert "<final_response>" not in combined
+
+    def test_no_sentinel_passes_through(self):
+        sf = SentinelStreamFilter("<final_response>", replacement="X")
+        t, tr = sf.feed("no sentinel here")
+        assert tr is False
+        assert t == "no sentinel here"
+        assert sf.triggered is False
+
+    def test_partial_mismatch_flushed(self):
+        sf = SentinelStreamFilter("<final_response>", replacement="X")
+        t, tr = sf.feed("<final_xyz")
+        assert tr is False
+        assert "<final_xyz" in t
+
+    def test_flush_returns_remaining_buffer(self):
+        sf = SentinelStreamFilter("<final_response>", replacement="X")
+        t, _ = sf.feed("text<final_re")
+        remaining = sf.flush()
+        assert "final_re" in remaining
+
+    def test_after_trigger_passes_through(self):
+        sf = SentinelStreamFilter("<final_response>", replacement="X")
+        sf.feed("<final_response>")
+        t, tr = sf.feed("more text")
+        assert tr is False  # already triggered, not again
+        assert t == "more text"
+
+
+# ---------------------------------------------------------------------------
+# WRAP_INTERMEDIATE_THINKING tests (sentinel-based)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_stream_chunks_wrap_thinking_no_duplicates():
-    """Intermediate text inside <think>, final answer outside — no duplicates."""
+async def test_stream_chunks_wrap_thinking_sentinel_splits_think():
+    """Sentinel token closes <think> and streams final answer live."""
 
     async def multi_turn_source():
-        # Intermediate text delta (assistant turn 1)
+        # Intermediate text
         yield {
             "type": "stream_event",
             "event": {
@@ -1271,7 +1337,7 @@ async def test_stream_chunks_wrap_thinking_no_duplicates():
                 "delta": {"type": "text_delta", "text": "Let me check..."},
             },
         }
-        # Tool use block (start + delta + stop) — triggers flush of buffered text
+        # Tool use block
         yield {
             "type": "stream_event",
             "event": {
@@ -1292,7 +1358,14 @@ async def test_stream_chunks_wrap_thinking_no_duplicates():
             "type": "stream_event",
             "event": {"type": "content_block_stop", "index": 0},
         }
-        # Final answer text (buffered, emitted outside </think> at end)
+        # Model emits sentinel then final answer
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "<final_response>"},
+            },
+        }
         yield {
             "type": "stream_event",
             "event": {
@@ -1324,32 +1397,38 @@ async def test_stream_chunks_wrap_thinking_no_duplicates():
         delta = parsed.get("choices", [{}])[0].get("delta", {})
         all_content += delta.get("content", "")
 
-    # Intermediate text inside <think>, final answer outside </think>
     assert "<think>" in all_content
     assert "</think>" in all_content
-    think_start = all_content.index("<think>")
+    # Sentinel token itself should NOT appear in output
+    assert "<final_response>" not in all_content
     think_end = all_content.index("</think>")
-    inside_think = all_content[think_start:think_end]
-    after_think = all_content[think_end + len("</think>"):]
-
-    assert "Let me check..." in inside_think
-    assert "[Tool: Read]" in inside_think
-    assert "The file contains hello world." in after_think
-    # No duplicate — final text appears exactly once
+    inside = all_content[:think_end]
+    outside = all_content[think_end + len("</think>"):]
+    assert "Let me check..." in inside
+    assert "[Tool: Read]" in inside
+    assert "The file contains hello world." in outside
+    # No duplication
     assert all_content.count("The file contains hello world.") == 1
-    assert all_content.count("Let me check...") == 1
 
 
 @pytest.mark.asyncio
-async def test_stream_chunks_wrap_thinking_no_tools_no_think_tags():
-    """When no tools are used, text is emitted normally without think tags."""
+async def test_stream_chunks_wrap_thinking_sentinel_chunked():
+    """Sentinel detection works when token is split across multiple deltas."""
 
-    async def simple_source():
+    async def chunked_sentinel_source():
+        # Some text then chunked sentinel
         yield {
             "type": "stream_event",
             "event": {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "Hello world"},
+                "delta": {"type": "text_delta", "text": "intermediate<final_"},
+            },
+        }
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "response>final answer"},
             },
         }
 
@@ -1362,7 +1441,11 @@ async def test_stream_chunks_wrap_thinking_no_tools_no_think_tags():
         lines = [
             line
             async for line in stream_chunks(
-                simple_source(), request, "req-notool", [], logging.getLogger("test-notool")
+                chunked_sentinel_source(),
+                request,
+                "req-chunked",
+                [],
+                logging.getLogger("test-chunked"),
             )
         ]
 
@@ -1372,9 +1455,10 @@ async def test_stream_chunks_wrap_thinking_no_tools_no_think_tags():
         delta = parsed.get("choices", [{}])[0].get("delta", {})
         all_content += delta.get("content", "")
 
-    # No tools → no think tags at all
-    assert "<think>" not in all_content
-    assert "Hello world" in all_content
+    assert "<final_response>" not in all_content
+    assert "</think>" in all_content
+    assert "intermediate" in all_content
+    assert "final answer" in all_content
 
 
 @pytest.mark.asyncio
@@ -1414,35 +1498,43 @@ async def test_stream_chunks_wrap_thinking_disabled_no_think_tags():
 
 
 @pytest.mark.asyncio
-async def test_stream_chunks_wrap_thinking_tool_results_inside_think():
-    """Tool results flush buffered text and are emitted inside think tags."""
+async def test_stream_chunks_wrap_thinking_no_sentinel_closes_think_at_end():
+    """If model never emits sentinel, think block closes at stream end."""
 
-    async def tool_result_source():
-        # Some text first (buffered)
+    async def no_sentinel_source():
         yield {
             "type": "stream_event",
             "event": {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "Working..."},
+                "delta": {"type": "text_delta", "text": "some text"},
             },
         }
-        # User chunk with tool_result (triggers tool_seen)
+        # Tool activity opens think
         yield {
-            "type": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": "tu-1",
-                    "content": "file contents here",
-                }
-            ],
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "tu-1", "name": "Bash"},
+            },
         }
-        # Final answer text (buffered, emitted outside </think>)
         yield {
             "type": "stream_event",
             "event": {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "Done!"},
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"cmd":"ls"}'},
+            },
+        }
+        yield {
+            "type": "stream_event",
+            "event": {"type": "content_block_stop", "index": 0},
+        }
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "no sentinel here"},
             },
         }
 
@@ -1455,11 +1547,11 @@ async def test_stream_chunks_wrap_thinking_tool_results_inside_think():
         lines = [
             line
             async for line in stream_chunks(
-                tool_result_source(),
+                no_sentinel_source(),
                 request,
-                "req-wrap-tr",
+                "req-no-sentinel",
                 [],
-                logging.getLogger("test-wrap-tr"),
+                logging.getLogger("test-no-sentinel"),
             )
         ]
 
@@ -1469,25 +1561,16 @@ async def test_stream_chunks_wrap_thinking_tool_results_inside_think():
         delta = parsed.get("choices", [{}])[0].get("delta", {})
         all_content += delta.get("content", "")
 
+    # Think should still be closed at stream end
     assert "<think>" in all_content
     assert "</think>" in all_content
-    think_end = all_content.index("</think>")
-    inside = all_content[:think_end]
-    outside = all_content[think_end:]
-    # "Working..." flushed inside think (it was buffered before tool_result)
-    # Note: "Working..." doesn't get flushed into think by tool_result directly
-    # because tool_result sets tool_seen but doesn't call _flush_text_buf_inside_think.
-    # However, at stream end, text_buf still has "Working..." + "Done!" and tool_seen=True,
-    # but think was opened by tool_result summary, so remaining buf goes outside </think>.
-    assert "[Result:" in inside
-    assert "Done!" in outside
 
 
 @pytest.mark.asyncio
 async def test_stream_chunks_wrap_thinking_suppresses_sdk_think_tags():
     """SDK-native <think>/<think> tags are suppressed when wrapping is enabled."""
 
-    async def thinking_with_tools_source():
+    async def thinking_with_sentinel_source():
         # SDK thinking block
         yield {
             "type": "stream_event",
@@ -1507,41 +1590,12 @@ async def test_stream_chunks_wrap_thinking_suppresses_sdk_think_tags():
             "type": "stream_event",
             "event": {"type": "content_block_stop"},
         }
-        # Intermediate text
+        # Sentinel then answer
         yield {
             "type": "stream_event",
             "event": {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "Let me look..."},
-            },
-        }
-        # Tool use (triggers think wrapping)
-        yield {
-            "type": "stream_event",
-            "event": {
-                "type": "content_block_start",
-                "index": 1,
-                "content_block": {"type": "tool_use", "id": "tu-1", "name": "Grep"},
-            },
-        }
-        yield {
-            "type": "stream_event",
-            "event": {
-                "type": "content_block_delta",
-                "index": 1,
-                "delta": {"type": "input_json_delta", "partial_json": '{"q":"x"}'},
-            },
-        }
-        yield {
-            "type": "stream_event",
-            "event": {"type": "content_block_stop", "index": 1},
-        }
-        # Final text
-        yield {
-            "type": "stream_event",
-            "event": {
-                "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "Final answer"},
+                "delta": {"type": "text_delta", "text": "<final_response>Answer"},
             },
         }
 
@@ -1554,7 +1608,7 @@ async def test_stream_chunks_wrap_thinking_suppresses_sdk_think_tags():
         lines = [
             line
             async for line in stream_chunks(
-                thinking_with_tools_source(),
+                thinking_with_sentinel_source(),
                 request,
                 "req-wrap-think",
                 [],
@@ -1568,6 +1622,6 @@ async def test_stream_chunks_wrap_thinking_suppresses_sdk_think_tags():
         delta = parsed.get("choices", [{}])[0].get("delta", {})
         all_content += delta.get("content", "")
 
-    # Should only have ONE pair of think tags (our wrapper), not nested SDK ones
+    # Only ONE pair of think tags (our wrapper), no nested SDK ones
     assert all_content.count("<think>") == 1
     assert all_content.count("</think>") == 1

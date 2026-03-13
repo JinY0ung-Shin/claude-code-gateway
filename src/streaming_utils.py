@@ -6,7 +6,7 @@ from typing import Any, AsyncGenerator, Dict, Optional
 
 from claude_agent_sdk.types import ToolResultBlock, ToolUseBlock
 
-from src.constants import WRAP_INTERMEDIATE_THINKING
+from src.constants import RESPONSE_SENTINEL, WRAP_INTERMEDIATE_THINKING
 from src.message_adapter import MessageAdapter
 from src.models import ChatCompletionRequest, ChatCompletionStreamResponse, StreamChoice
 from src.response_models import (
@@ -234,6 +234,77 @@ class CollabJsonStreamFilter:
         self._depth = 0
         self._in_string = False
         self._escape_next = False
+
+
+class SentinelStreamFilter:
+    """Detect a sentinel token across chunked text deltas.
+
+    Characters are buffered only while a potential prefix of the sentinel is
+    accumulating.  Once the full sentinel is matched it is consumed (replaced
+    by *replacement*).  If the buffer diverges from the sentinel prefix the
+    accumulated characters are flushed as normal text.
+
+    Usage::
+
+        sf = SentinelStreamFilter("<final_response>", replacement="</think>\\n")
+        for delta in deltas:
+            text, triggered = sf.feed(delta)
+            # *text* is safe to emit; *triggered* is True once the sentinel
+            # has been fully matched (exactly once).
+        text = sf.flush()  # emit any remaining buffered chars at stream end
+    """
+
+    def __init__(self, sentinel: str, replacement: str = ""):
+        self._sentinel = sentinel
+        self._replacement = replacement
+        self._buf = ""
+        self._triggered = False
+
+    @property
+    def triggered(self) -> bool:
+        return self._triggered
+
+    def feed(self, text: str) -> tuple[str, bool]:
+        """Process a text delta.
+
+        Returns ``(output_text, just_triggered)`` where *just_triggered* is
+        True on the single call that matched the sentinel.
+        """
+        if self._triggered:
+            return text, False
+
+        output: list[str] = []
+        for ch in text:
+            candidate = self._buf + ch
+            if self._sentinel.startswith(candidate):
+                # Still a valid prefix — keep buffering
+                self._buf = candidate
+                if candidate == self._sentinel:
+                    # Full match!
+                    self._triggered = True
+                    self._buf = ""
+                    output.append(self._replacement)
+                    # Return everything after the sentinel in this delta
+                    idx = text.index(ch) + 1
+                    remainder = text[idx:]
+                    return "".join(output) + remainder, True
+            else:
+                # Mismatch — flush buffer and current char
+                output.append(self._buf)
+                self._buf = ""
+                # The current char might start a new match
+                if ch == self._sentinel[0]:
+                    self._buf = ch
+                else:
+                    output.append(ch)
+
+        return "".join(output), False
+
+    def flush(self) -> str:
+        """Return any remaining buffered text at stream end."""
+        result = self._buf
+        self._buf = ""
+        return result
 
 
 def process_chunk_content(chunk: Dict[str, Any], content_sent: bool = False):
@@ -659,15 +730,15 @@ async def stream_chunks(
     tool_acc = ToolUseAccumulator()
     collab_filter = CollabJsonStreamFilter()
 
-    # When WRAP_INTERMEDIATE_THINKING is enabled, text deltas are buffered and
-    # flushed inside <think></think> at tool-activity boundaries.  The final
-    # answer (text remaining after the last tool call) is emitted *outside*
-    # the think block — no duplication.  When no tools are used the buffer is
-    # emitted normally without any think tags.
+    # When WRAP_INTERMEDIATE_THINKING is enabled, a <think> block is opened at
+    # the first content and all text streams live inside it.  The model is
+    # instructed (via system prompt) to emit a sentinel token (<final_response>)
+    # before its final answer.  SentinelStreamFilter detects the token across
+    # chunked deltas, replaces it with </think>, and from that point on all
+    # text streams as visible content — no buffering, no duplication.
     wrap_thinking = WRAP_INTERMEDIATE_THINKING
     think_opened = False
-    tool_seen = False
-    text_buf: list[str] = []  # buffered text deltas (only used when wrap_thinking)
+    sentinel_filter = SentinelStreamFilter(RESPONSE_SENTINEL, replacement="\n</think>\n")
 
     def _emit_sse(text: str):
         nonlocal role_sent
@@ -686,20 +757,6 @@ async def stream_chunks(
             think_opened = True
             return _emit_sse("<think>\n")
         return []
-
-    def _flush_text_buf_inside_think():
-        """Flush buffered text inside the think block (marks it as intermediate)."""
-        nonlocal content_sent
-        result: list[str] = []
-        if text_buf:
-            text = "".join(text_buf)
-            text_buf.clear()
-            for sse in _open_think():
-                result.append(sse)
-            for sse in _emit_sse(text):
-                result.append(sse)
-            content_sent = True
-        return result
 
     async for chunk in chunk_source:
         # Handle AssistantMessage.error (auth failures, rate limits, etc.)
@@ -729,9 +786,16 @@ async def stream_chunks(
                 cleaned = collab_filter.feed(text_delta)
                 if cleaned:
                     if wrap_thinking:
-                        # Buffer text; it will be flushed inside <think> on
-                        # tool activity, or outside </think> at stream end.
-                        text_buf.append(cleaned)
+                        # Open think block on first content
+                        for sse in _open_think():
+                            yield sse
+                        # Run through sentinel filter — it replaces the
+                        # sentinel token with </think> across chunked deltas.
+                        filtered, _triggered = sentinel_filter.feed(cleaned)
+                        if filtered:
+                            for sse in _emit_sse(filtered):
+                                yield sse
+                            content_sent = True
                     else:
                         for sse in _emit_sse(cleaned):
                             yield sse
@@ -746,10 +810,6 @@ async def stream_chunks(
         if handled:
             if tool_block:
                 if wrap_thinking:
-                    tool_seen = True
-                    # Flush any buffered text as intermediate (inside think)
-                    for sse in _flush_text_buf_inside_think():
-                        yield sse
                     tool_summary = f"\n[Tool: {tool_block.get('name', '?')}]\n"
                     for sse in _open_think():
                         yield sse
@@ -772,7 +832,6 @@ async def stream_chunks(
             tool_results, parent_id = extract_user_tool_results(chunk)
             for tr_block in tool_results:
                 if wrap_thinking:
-                    tool_seen = True
                     result_data = _normalize_tool_result(tr_block)
                     summary = f"\n[Result: {str(result_data.get('content', ''))[:200]}]\n"
                     for sse in _open_think():
@@ -789,25 +848,19 @@ async def stream_chunks(
             continue
 
         # Emit tool_use/tool_result blocks embedded in assistant content
-        # (Codex collab_tool_call → tool blocks arrive here, not via stream_event)
         embedded_tools = extract_embedded_tool_blocks(chunk)
         for tb in embedded_tools:
             if wrap_thinking:
-                tool_seen = True
-                for sse in _flush_text_buf_inside_think():
+                for sse in _open_think():
                     yield sse
                 if tb.get("type") == "tool_use":
                     tool_summary = f"\n[Tool: {tb.get('name', '?')}]\n"
-                    for sse in _open_think():
-                        yield sse
                     for sse in _emit_sse(tool_summary):
                         yield sse
                     content_sent = True
                 elif tb.get("type") == "tool_result":
                     result_data = _normalize_tool_result(tb)
                     summary = f"\n[Result: {str(result_data.get('content', ''))[:200]}]\n"
-                    for sse in _open_think():
-                        yield sse
                     for sse in _emit_sse(summary):
                         yield sse
                     content_sent = True
@@ -823,46 +876,43 @@ async def stream_chunks(
         text = format_chunk_content(chunk, content_sent)
         if text:
             if wrap_thinking:
-                text_buf.append(text)
+                for sse in _open_think():
+                    yield sse
+                filtered, _triggered = sentinel_filter.feed(text)
+                if filtered:
+                    for sse in _emit_sse(filtered):
+                        yield sse
+                    content_sent = True
             else:
                 for sse in _emit_sse(text):
                     yield sse
                 content_sent = True
 
-    # Flush any remaining buffered text from the collab filter
-    remaining = collab_filter.flush()
-    if remaining:
+    # Flush remaining buffered chars from both filters
+    remaining_collab = collab_filter.flush()
+    if remaining_collab:
         if wrap_thinking:
-            text_buf.append(remaining)
+            filtered, _ = sentinel_filter.feed(remaining_collab)
+            if filtered:
+                for sse in _emit_sse(filtered):
+                    yield sse
+                content_sent = True
         else:
-            for sse in _emit_sse(remaining):
+            for sse in _emit_sse(remaining_collab):
                 yield sse
             content_sent = True
+
+    remaining_sentinel = sentinel_filter.flush()
+    if remaining_sentinel:
+        for sse in _emit_sse(remaining_sentinel):
+            yield sse
+        content_sent = True
 
     if tool_acc.has_incomplete:
         logger.warning("Incomplete tool_use blocks at stream end: %s", tool_acc.incomplete_keys)
 
-    # Emit remaining buffered text
-    if wrap_thinking and text_buf:
-        final_text = "".join(text_buf)
-        text_buf.clear()
-        if tool_seen and think_opened:
-            # Close think block, then emit final answer outside
-            for sse in _emit_sse("\n</think>\n"):
-                yield sse
-            for sse in _emit_sse(final_text):
-                yield sse
-        elif tool_seen:
-            # Tools seen but think never opened (edge case) — emit normally
-            for sse in _emit_sse(final_text):
-                yield sse
-        else:
-            # No tool activity — emit text normally without think tags
-            for sse in _emit_sse(final_text):
-                yield sse
-        content_sent = True
-    elif wrap_thinking and think_opened:
-        # Think was opened but no remaining text (tools only, no final answer)
+    # If think was opened but sentinel never fired, close it at stream end
+    if wrap_thinking and think_opened and not sentinel_filter.triggered:
         for sse in _emit_sse("\n</think>\n"):
             yield sse
 
