@@ -5,7 +5,7 @@ import logging
 import secrets
 import string
 import uuid
-from typing import Optional, AsyncGenerator, Dict, Any
+from typing import Optional, AsyncGenerator, Dict, Any, List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Depends
@@ -71,7 +71,7 @@ from src.constants import (
     PERMISSION_MODE_BYPASS,
 )
 from src.backends.claude.constants import DEFAULT_ALLOWED_TOOLS
-from src.mcp_config import get_mcp_servers
+from src.mcp_config import get_mcp_servers, get_mcp_tool_patterns
 from src import streaming_utils
 
 # Note: load_dotenv() is called in constants.py at import time
@@ -611,6 +611,14 @@ async def _stream_chunks(
         logger=logger,
     ):
         yield line
+
+
+def _mcp_allowed_tools() -> Optional[List[str]]:
+    """Return symbolic MCP tool patterns if MCP servers are configured, else None."""
+    servers = get_mcp_servers()
+    if not servers:
+        return None
+    return get_mcp_tool_patterns(servers)
 
 
 def _prepare_stateless_completion(messages: list, claude_options: Dict[str, Any]) -> tuple:
@@ -1191,13 +1199,16 @@ async def anthropic_messages(
         # Run Claude Code - tools enabled by default for Anthropic SDK clients
         # (they're typically using this for agentic workflows)
         mcp_servers = get_mcp_servers() or None
+        allowed_tools = list(DEFAULT_ALLOWED_TOOLS)
+        if mcp_servers:
+            allowed_tools.extend(get_mcp_tool_patterns(mcp_servers))
         chunks = []
         async for chunk in claude_backend.run_completion(
             prompt=prompt,
             system_prompt=system_prompt,
             model=request_body.model,
             max_turns=DEFAULT_MAX_TURNS,
-            allowed_tools=DEFAULT_ALLOWED_TOOLS,
+            allowed_tools=allowed_tools,
             permission_mode=PERMISSION_MODE_BYPASS,
             stream=False,
             mcp_servers=mcp_servers,
@@ -1561,6 +1572,7 @@ async def _responses_streaming_preflight(
             system_prompt=system_prompt if is_new_session else None,
             permission_mode=PERMISSION_MODE_BYPASS,
             mcp_servers=get_mcp_servers() if resolved.backend == "claude" else None,
+            allowed_tools=_mcp_allowed_tools() if resolved.backend == "claude" else None,
             session_id=session_id if is_new_session else None,
             resume=resume_id,
         ),
@@ -1799,6 +1811,7 @@ async def create_response(
                     system_prompt=system_prompt if is_new_session else None,
                     permission_mode=PERMISSION_MODE_BYPASS,
                     mcp_servers=get_mcp_servers() if resolved.backend == "claude" else None,
+                    allowed_tools=_mcp_allowed_tools() if resolved.backend == "claude" else None,
                     session_id=session_id if is_new_session else None,
                     resume=resume_id,
                 ):
