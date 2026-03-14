@@ -59,3 +59,5 @@ test_performance_*.py
 test_user_*.py
 test_new_*.py
 test_roocode_compatibility.py
+
+working_dir/
