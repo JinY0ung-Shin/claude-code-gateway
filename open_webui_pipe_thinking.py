@@ -340,13 +340,10 @@ class Pipe:
                                 think_open = True
                             yield f"[Tool: {name}]\n"
                         else:
-                            parent = event.get("parent_tool_use_id")
-                            indent = "> > " if parent else "> "
                             event_json = json.dumps(event, indent=2, ensure_ascii=False)
-                            quoted_json = ("\n" + indent).join(event_json.split("\n"))
                             yield (
-                                f"\n\n{indent}🔧 **{name}**\n"
-                                f"{indent}```json\n{indent}{quoted_json}\n{indent}```\n"
+                                f"\n\n<details>\n<summary>🔧 {name}</summary>\n\n"
+                                f"```json\n{event_json}\n```\n\n</details>\n"
                             )
                         continue
 
@@ -363,17 +360,14 @@ class Pipe:
                             label = f"{prefix}({tool_name})" if tool_name else prefix
                             yield f"[{label}: {str(content)[:200]}]\n"
                         else:
-                            parent = event.get("parent_tool_use_id")
-                            indent = "> > " if parent else "> "
                             prefix = "❌" if is_error else "📎"
-                            label = f"{prefix} **Result**"
+                            label = f"{prefix} Result"
                             if tool_name:
                                 label += f" ({tool_name})"
                             event_json = json.dumps(event, indent=2, ensure_ascii=False)
-                            quoted_json = ("\n" + indent).join(event_json.split("\n"))
                             yield (
-                                f"\n{indent}{label}\n"
-                                f"{indent}```json\n{indent}{quoted_json}\n{indent}```\n"
+                                f"\n<details>\n<summary>{label}</summary>\n\n"
+                                f"```json\n{event_json}\n```\n\n</details>\n"
                             )
                         continue
 
