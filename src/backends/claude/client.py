@@ -323,27 +323,28 @@ class ClaudeCodeCLI:
         self._configure_sandbox(options)
         self._configure_tools(options, allowed_tools, disallowed_tools)
 
+        # Always read CLAUDE.md so project instructions are honoured even
+        # when the SDK's setting_sources mechanism doesn't inject them.
+        claude_md = self._read_claude_md()
+
         if model:
             options.model = model
         if system_prompt:
-            # A custom system_prompt replaces the claude_code preset, which
-            # means the SDK won't inject CLAUDE.md automatically.  Append the
-            # file contents so project instructions are still honoured.
-            claude_md = self._read_claude_md()
             if claude_md:
                 system_prompt = system_prompt + "\n\n" + claude_md
             if WRAP_INTERMEDIATE_THINKING:
                 system_prompt = system_prompt + RESPONSE_SENTINEL_INSTRUCTION
             options.system_prompt = {"type": "text", "text": system_prompt}
         elif WRAP_INTERMEDIATE_THINKING:
-            # Can't append to a preset, so use the instruction as a standalone
-            # system prompt. The SDK still applies its built-in behaviour.
             parts = []
-            claude_md = self._read_claude_md()
             if claude_md:
                 parts.append(claude_md)
             parts.append(RESPONSE_SENTINEL_INSTRUCTION.strip())
             options.system_prompt = {"type": "text", "text": "\n\n".join(parts)}
+        elif claude_md:
+            # No custom prompt and no wrapping, but CLAUDE.md exists.
+            # Don't rely on the SDK preset to load it — inject explicitly.
+            options.system_prompt = {"type": "text", "text": claude_md}
         else:
             options.system_prompt = {"type": "preset", "preset": "claude_code"}
         if permission_mode:
