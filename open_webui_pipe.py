@@ -100,11 +100,12 @@ class Pipe:
         dscrowd_token = meta_headers.get("x-cookie-dscrowd.token_key", "")
         if dscrowd_token:
             self._extra_headers["X-Cookie-dscrowd.token_key"] = dscrowd_token
-        # Extract username from Open WebUI user info
-        if __user__ and isinstance(__user__, dict):
-            username = __user__.get("name", "") or __user__.get("email", "")
-            if username:
-                self._extra_headers["X-MLM-Username"] = username
+        # Forward username from ENABLE_FORWARD_USER_INFO_HEADERS (lowercased in metadata)
+        owui_username = meta_headers.get("x-openwebui-user-name", "")
+        if not owui_username and __user__ and isinstance(__user__, dict):
+            owui_username = __user__.get("name", "") or __user__.get("email", "")
+        if owui_username:
+            self._extra_headers["X-MLM-Username"] = owui_username
 
         if not chat_id:
             log.warning("[PIPE] No chat_id in metadata, multi-turn chaining disabled")
