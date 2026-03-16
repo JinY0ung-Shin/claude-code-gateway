@@ -340,7 +340,7 @@ class Pipe:
                                 think_open = True
                             yield f"[Tool: {name}]\n"
                         else:
-                            yield f"\n\n> 🔧 **{name}**\n"
+                            yield f"\n<think>\n🔧 {name}\n</think>\n"
                         continue
 
                     if event_type == "response.tool_result":
@@ -361,7 +361,7 @@ class Pipe:
                             if tool_name:
                                 label += f" ({tool_name})"
                             snippet = str(content)[:200]
-                            yield f"\n> {label}: {snippet}\n"
+                            yield f"\n<think>\n{label}: {snippet}\n</think>\n"
                         continue
 
                     if event_type == "response.task_started":
@@ -373,7 +373,7 @@ class Pipe:
                                     think_open = True
                                 yield f"[Task: {desc}]\n"
                             else:
-                                yield f"\n\n> ⏳ **Task**: {desc}\n"
+                                yield f"\n<think>\n⏳ Task: {desc}\n</think>\n"
                         continue
 
                     if event_type == "response.task_progress":
@@ -388,12 +388,10 @@ class Pipe:
                                 text += f" ({tool})"
                             yield text + "]\n"
                         else:
-                            usage = event.get("usage") or {}
-                            uses = usage.get("tool_uses", 0)
-                            text = f"\n> 🔄 **Progress**: {desc}"
+                            text = f"🔄 Progress: {desc}"
                             if tool:
-                                text += f" ({tool}, {uses}회)"
-                            yield text + "\n"
+                                text += f" ({tool})"
+                            yield f"\n<think>\n{text}\n</think>\n"
                         continue
 
                     if event_type == "response.task_notification":
@@ -406,7 +404,7 @@ class Pipe:
                                     think_open = True
                                 yield f"[Task {status}: {summary}]\n"
                             else:
-                                yield f"\n> ✅ **Task {status}**: {summary}\n\n"
+                                yield f"\n<think>\n✅ Task {status}: {summary}\n</think>\n"
                         continue
 
                     if event_type == "response.completed":
