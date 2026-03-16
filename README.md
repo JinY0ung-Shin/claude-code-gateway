@@ -79,6 +79,7 @@ Key environment variables (see `.env.example` for full list):
 | `MCP_CONFIG` | — | MCP server config (JSON string or file path) |
 | `API_KEY` | — | Optional Bearer token for access control |
 | `SESSION_MAX_AGE_MINUTES` | `60` | Session TTL |
+| `CD_OPENWEBUI` | `false` | Map Open WebUI chat IDs to sessions automatically |
 | `RATE_LIMIT_CHAT_PER_MINUTE` | `10` | Chat endpoint rate limit |
 
 ### Bash Sandbox
@@ -162,7 +163,27 @@ curl http://localhost:8000/v1/messages \
 
 ### Open WebUI
 
-`open_webui_pipe.py` is included for Open WebUI integration. Configure in the pipe:
+There are two ways to integrate with Open WebUI:
+
+#### Option A: Direct Connection (Recommended)
+
+Connect Open WebUI directly to the gateway as an OpenAI-compatible backend. Set these environment variables:
+
+**Gateway side:**
+```bash
+CD_OPENWEBUI=true   # Enables automatic session mapping
+```
+
+**Open WebUI side:**
+```bash
+ENABLE_FORWARD_USER_INFO_HEADERS=true   # Sends X-OpenWebUI-Chat-Id header
+```
+
+Then add the gateway as an OpenAI-compatible connection in Open WebUI (`http://localhost:8000/v1`). The gateway automatically maps each Open WebUI chat to a persistent session, so every turn knows the previous context — no pipe needed.
+
+#### Option B: Pipe Integration
+
+`open_webui_pipe.py` is included as an alternative. Configure in the pipe:
 
 - `BASE_URL` — Gateway URL (e.g., `http://localhost:8000`)
 - `API_KEY` — Gateway Bearer token, if enabled
