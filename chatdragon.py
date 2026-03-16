@@ -567,21 +567,22 @@ class Pipeline:
                             chars = m.group(1) if m else "large"
                             result_content = f"Result truncated ({chars} chars)"
                         result_content = result_content[:500]
-                        # Always render as a <details> block — errors show
-                        # with status="error" so the UI can style them.
-                        esc_name = html.escape(name)
-                        esc_args = html.escape(args)
-                        esc_result = html.escape(result_content)
-                        status = "error" if is_error else "complete"
-                        yield (
-                            f'\n\n<details type="tool_calls" name="{esc_name}"'
-                            f' arguments="{esc_args}"'
-                            f' result="{esc_result}"'
-                            f' status="{status}"'
-                            f' done="true">\n'
-                            f"<summary>View Result from {esc_name}</summary>\n"
-                            f"</details>\n\n"
-                        )
+                        if is_error:
+                            yield f"\n\n**Error** (`{name}`): {result_content}\n\n"
+                        else:
+                            # Escape for HTML attributes
+                            esc_name = html.escape(name)
+                            esc_args = html.escape(args)
+                            esc_result = html.escape(result_content)
+                            yield (
+                                f'\n\n<details type="tool_calls" name="{esc_name}"'
+                                f' arguments="{esc_args}"'
+                                f' result="{esc_result}"'
+                                f' status="complete"'
+                                f' done="true">\n'
+                                f"<summary>Tool: {esc_name}</summary>\n"
+                                f"</details>\n\n"
+                            )
 
                     elif event_type == "response.completed":
                         completed = True
