@@ -336,13 +336,6 @@ class Pipe:
                         name = event.get("name", "")
                         if tool_id:
                             tool_names[tool_id] = name
-                        escaped_name = html.escape(name)
-                        event_json = json.dumps(event, indent=2, ensure_ascii=False)
-                        # Use 4-backtick fence so triple backticks in content don't break it
-                        yield (
-                            f"\n\n<details>\n<summary>🔧 {escaped_name}</summary>\n\n"
-                            f"````json\n{event_json}\n````\n\n</details>\n"
-                        )
 
                     elif event_type == "response.tool_result":
                         tool_id = event.get("tool_use_id", "")
