@@ -169,6 +169,9 @@ class Pipe:
             return
 
         instructions = self._extract_instructions(messages)
+        username = (__user__ or {}).get("name", "")
+        if username:
+            instructions = f"Current user: {username}\n\n{instructions}" if instructions else f"Current user: {username}"
         current_input = self._extract_current_input(messages)
         if not current_input:
             yield "Error: No user message found."
@@ -213,12 +216,12 @@ class Pipe:
 
             if use_stream:
                 async for chunk in self._pipe_stream(
-                    chat_id, payload, instructions, instructions_hash, body
+                    chat_id, payload, instructions, instructions_hash, body, username
                 ):
                     yield chunk
             else:
                 result = await self._pipe_non_stream(
-                    chat_id, payload, instructions, instructions_hash, body
+                    chat_id, payload, instructions, instructions_hash, body, username
                 )
                 yield result
 
@@ -227,10 +230,10 @@ class Pipe:
     # ------------------------------------------------------------------
 
     async def _pipe_stream(
-        self, chat_id: str, payload: dict, instructions: str, instructions_hash: str, body: dict
+        self, chat_id: str, payload: dict, instructions: str, instructions_hash: str, body: dict, username: str = ""
     ) -> AsyncGenerator[str, None]:
         try:
-            async for chunk in self._stream_responses(chat_id, payload, instructions_hash):
+            async for chunk in self._stream_responses(chat_id, payload, instructions_hash, username):
                 yield chunk
         except ChainResetError as e:
             log.info("Chain reset for chat %s: %s. Retrying as new conversation.", chat_id, e)
@@ -240,23 +243,23 @@ class Pipe:
             if instructions:
                 payload["instructions"] = instructions
             try:
-                async for chunk in self._stream_responses(chat_id, payload, instructions_hash):
+                async for chunk in self._stream_responses(chat_id, payload, instructions_hash, username):
                     yield chunk
             except ChainResetError:
                 log.error("Chain reset retry also failed for chat %s", chat_id)
                 if self.valves.FALLBACK_TO_CHAT_COMPLETIONS:
-                    yield await self._fallback_chat_completions(body)
+                    yield await self._fallback_chat_completions(body, username)
                 else:
                     yield "Error: Failed to establish conversation chain. Please start a new chat."
         except Exception as e:
             log.error("Unexpected error for chat %s: %s", chat_id, e)
             if self.valves.FALLBACK_TO_CHAT_COMPLETIONS:
-                yield await self._fallback_chat_completions(body)
+                yield await self._fallback_chat_completions(body, username)
             else:
                 yield f"Error: {e}"
 
     async def _stream_responses(
-        self, chat_id: str, payload: dict, instructions_hash: str
+        self, chat_id: str, payload: dict, instructions_hash: str, username: str = ""
     ) -> AsyncGenerator[str, None]:
         """Streaming /v1/responses call with <think> wrapping."""
         wrap = self.valves.WRAP_THINKING
@@ -266,7 +269,7 @@ class Pipe:
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
             async with client.stream(
-                "POST", self._responses_url(), json=payload, headers=self._make_headers()
+                "POST", self._responses_url(), json=payload, headers=self._make_headers(username)
             ) as resp:
                 if resp.status_code != 200:
                     body = ""
@@ -442,10 +445,10 @@ class Pipe:
     # ------------------------------------------------------------------
 
     async def _pipe_non_stream(
-        self, chat_id: str, payload: dict, instructions: str, instructions_hash: str, body: dict
+        self, chat_id: str, payload: dict, instructions: str, instructions_hash: str, body: dict, username: str = ""
     ) -> str:
         try:
-            return await self._call_responses(chat_id, payload, instructions_hash)
+            return await self._call_responses(chat_id, payload, instructions_hash, username)
         except ChainResetError as e:
             log.info("Chain reset for chat %s: %s. Retrying as new conversation.", chat_id, e)
             if chat_id:
@@ -454,23 +457,23 @@ class Pipe:
             if instructions:
                 payload["instructions"] = instructions
             try:
-                return await self._call_responses(chat_id, payload, instructions_hash)
+                return await self._call_responses(chat_id, payload, instructions_hash, username)
             except ChainResetError:
                 log.error("Chain reset retry also failed for chat %s", chat_id)
                 if self.valves.FALLBACK_TO_CHAT_COMPLETIONS:
-                    return await self._fallback_chat_completions(body)
+                    return await self._fallback_chat_completions(body, username)
                 return "Error: Failed to establish conversation chain. Please start a new chat."
         except Exception as e:
             log.error("Unexpected error for chat %s: %s", chat_id, e)
             if self.valves.FALLBACK_TO_CHAT_COMPLETIONS:
-                return await self._fallback_chat_completions(body)
+                return await self._fallback_chat_completions(body, username)
             return f"Error: {e}"
 
-    async def _call_responses(self, chat_id: str, payload: dict, instructions_hash: str) -> str:
+    async def _call_responses(self, chat_id: str, payload: dict, instructions_hash: str, username: str = "") -> str:
         """Non-streaming /v1/responses call."""
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
             resp = await client.post(
-                self._responses_url(), json=payload, headers=self._make_headers()
+                self._responses_url(), json=payload, headers=self._make_headers(username)
             )
 
             if resp.status_code != 200:
@@ -499,10 +502,12 @@ class Pipe:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _make_headers(self) -> dict:
+    def _make_headers(self, username: str = "") -> dict:
         headers = {"Content-Type": "application/json"}
         if self.valves.API_KEY:
             headers["Authorization"] = f"Bearer {self.valves.API_KEY}"
+        if username:
+            headers["X-MLM-Username"] = username
         return headers
 
     def _responses_url(self) -> str:
@@ -526,7 +531,7 @@ class Pipe:
             return any(kw in detail.lower() for kw in chain_keywords)
         return False
 
-    async def _fallback_chat_completions(self, body: dict) -> str:
+    async def _fallback_chat_completions(self, body: dict, username: str = "") -> str:
         url = f"{self.valves.BASE_URL.rstrip('/')}/v1/chat/completions"
         payload = {
             "model": self.valves.MODEL,
@@ -534,7 +539,7 @@ class Pipe:
             "stream": False,
         }
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
-            resp = await client.post(url, json=payload, headers=self._make_headers())
+            resp = await client.post(url, json=payload, headers=self._make_headers(username))
             if resp.status_code != 200:
                 return f"Error: Fallback also failed ({resp.status_code})"
             data = resp.json()
