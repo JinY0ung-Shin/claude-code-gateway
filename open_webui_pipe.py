@@ -55,8 +55,6 @@ class Pipe:
         self.chat_state: dict[str, dict] = {}
         # Per-chat locks for concurrency safety
         self._locks: dict[str, asyncio.Lock] = {}
-        # Per-request extra headers forwarded to the gateway
-        self._extra_headers: dict[str, str] = {}
 
     def pipes(self) -> list[dict]:
         return [
@@ -92,20 +90,6 @@ class Pipe:
 
         __metadata__ = __metadata__ or {}
         chat_id = __metadata__.get("chat_id", "")
-
-        # Forward cookies and user info as headers to the gateway
-        self._extra_headers = {}
-        meta_headers = __metadata__.get("headers", {})
-        # Forward dscrowd.token_key cookie for MCP Confluence auth
-        dscrowd_token = meta_headers.get("x-cookie-dscrowd.token_key", "")
-        if dscrowd_token:
-            self._extra_headers["X-Cookie-dscrowd.token_key"] = dscrowd_token
-        # Forward username from ENABLE_FORWARD_USER_INFO_HEADERS (lowercased in metadata)
-        owui_username = meta_headers.get("x-openwebui-user-name", "")
-        if not owui_username and __user__ and isinstance(__user__, dict):
-            owui_username = __user__.get("name", "") or __user__.get("email", "")
-        if owui_username:
-            self._extra_headers["X-MLM-Username"] = owui_username
 
         if not chat_id:
             log.warning("[PIPE] No chat_id in metadata, multi-turn chaining disabled")
@@ -222,7 +206,6 @@ class Pipe:
         headers = {"Content-Type": "application/json"}
         if self.valves.API_KEY:
             headers["Authorization"] = f"Bearer {self.valves.API_KEY}"
-        headers.update(self._extra_headers)
         return headers
 
     def _responses_url(self) -> str:
