@@ -20,6 +20,62 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
+RESPONSE_SENTINEL = "<response>"
+RESPONSE_SENTINEL_INSTRUCTION = (
+    "\n\n## Response Format\n"
+    "When you have finished all tool calls and are ready to write your final answer, "
+    "you MUST output the exact token `<response>` on its own line before your answer. "
+    "Do not include any other text on that line. Begin your answer immediately after."
+)
+
+
+class SentinelFilter:
+    """Detect a sentinel token across chunked text deltas.
+
+    Buffers characters only while a potential prefix of the sentinel is
+    accumulating.  Once the full sentinel is matched it is consumed and
+    replaced by *replacement*.
+    """
+
+    def __init__(self, sentinel: str, replacement: str = ""):
+        self._sentinel = sentinel
+        self._replacement = replacement
+        self._buf = ""
+        self._triggered = False
+
+    @property
+    def triggered(self) -> bool:
+        return self._triggered
+
+    def feed(self, text: str) -> tuple[str, bool]:
+        """Return ``(output_text, just_triggered)``."""
+        if self._triggered:
+            return text, False
+
+        output: list[str] = []
+        for i, ch in enumerate(text):
+            candidate = self._buf + ch
+            if self._sentinel.startswith(candidate):
+                self._buf = candidate
+                if candidate == self._sentinel:
+                    self._triggered = True
+                    self._buf = ""
+                    output.append(self._replacement)
+                    return "".join(output) + text[i + 1 :], True
+            else:
+                output.append(self._buf)
+                self._buf = ""
+                if ch == self._sentinel[0]:
+                    self._buf = ch
+                else:
+                    output.append(ch)
+        return "".join(output), False
+
+    def flush(self) -> str:
+        result = self._buf
+        self._buf = ""
+        return result
+
 
 class ChainResetError(Exception):
     """Raised when the conversation chain needs to be reset and retried."""
@@ -136,7 +192,12 @@ class Pipe:
             if prev_response_id:
                 payload["previous_response_id"] = prev_response_id
             elif instructions:
-                payload["instructions"] = instructions
+                if self.valves.WRAP_THINKING:
+                    payload["instructions"] = instructions + RESPONSE_SENTINEL_INSTRUCTION
+                else:
+                    payload["instructions"] = instructions
+            elif self.valves.WRAP_THINKING:
+                payload["instructions"] = RESPONSE_SENTINEL_INSTRUCTION.strip()
 
             if use_stream:
                 async for chunk in self._pipe_stream(
@@ -188,6 +249,7 @@ class Pipe:
         """Streaming /v1/responses call with <think> wrapping."""
         wrap = self.valves.WRAP_THINKING
         think_open = False
+        sentinel_filter = SentinelFilter(RESPONSE_SENTINEL, replacement="\n</think>\n")
         tool_names: dict[str, str] = {}
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
@@ -213,14 +275,21 @@ class Pipe:
 
                     event_type = event.get("type", "")
 
-                    # --- Final answer text ---
+                    # --- Text deltas (intermediate reasoning + final answer) ---
                     if event_type == "response.output_text.delta":
                         delta = event.get("delta", "")
                         if delta:
-                            if wrap and think_open:
-                                yield "\n</think>\n"
-                                think_open = False
-                            yield delta
+                            if wrap:
+                                # Open think block on first text
+                                if not think_open:
+                                    yield "<think>\n"
+                                    think_open = True
+                                # Sentinel filter replaces <response> with </think>
+                                filtered, _triggered = sentinel_filter.feed(delta)
+                                if filtered:
+                                    yield filtered
+                            else:
+                                yield delta
                         continue
 
                     # --- Intermediate events: wrap in <think> ---
@@ -343,9 +412,14 @@ class Pipe:
                             raise Exception(f"Response failed: {error_msg}")
                         raise ChainResetError(f"Response failed: {error_code} - {error_msg}")
 
-                # Close think block if still open at stream end
-                if wrap and think_open:
-                    yield "\n</think>\n"
+                # Flush sentinel filter buffer
+                if wrap:
+                    remaining = sentinel_filter.flush()
+                    if remaining:
+                        yield remaining
+                    # If think was opened but sentinel never fired, close it
+                    if think_open and not sentinel_filter.triggered:
+                        yield "\n</think>\n"
 
                 if not completed:
                     log.warning("[THINK-PIPE] No response.completed event received!")
