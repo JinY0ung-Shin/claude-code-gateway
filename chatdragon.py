@@ -542,16 +542,6 @@ class Pipeline:
                             ensure_ascii=False,
                         )
                         tool_pending[tool_id] = {"name": name, "args": tool_args}
-                        esc_name = html.escape(name)
-                        esc_args = html.escape(tool_args)
-                        yield (
-                            f'\n\n<details type="tool_calls" name="{esc_name}"'
-                            f' arguments="{esc_args}"'
-                            f' status="running"'
-                            f' done="false">\n'
-                            f"<summary>View Request from {esc_name}</summary>\n"
-                            f"</details>\n\n"
-                        )
 
                     elif event_type == "response.tool_result":
                         tool_id = event.get("tool_use_id", "")
