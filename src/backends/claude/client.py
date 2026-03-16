@@ -211,23 +211,6 @@ class ClaudeCodeCLI:
     # SDK option helpers
     # ------------------------------------------------------------------
 
-    def _read_claude_md(self) -> Optional[str]:
-        """Read CLAUDE.md from cwd, returning its contents or None."""
-        if not self.cwd:
-            return None
-        path = os.path.join(self.cwd, "CLAUDE.md")
-        try:
-            with open(path) as f:
-                content = f.read().strip()
-            if content:
-                logger.info("Injecting CLAUDE.md (%d chars) into system prompt", len(content))
-                return content
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logger.warning("Failed to read %s: %s", path, exc)
-        return None
-
     def _configure_thinking(self, options: ClaudeAgentOptions) -> None:
         """Apply thinking-mode configuration to *options*."""
         if THINKING_MODE == "adaptive":
@@ -314,37 +297,22 @@ class ClaudeCodeCLI:
         resume: Optional[str] = None,
     ) -> ClaudeAgentOptions:
         """Build ClaudeAgentOptions with common parameters."""
-        claude_md_path = os.path.join(self.cwd, "CLAUDE.md") if self.cwd else None
-        claude_md_exists = os.path.exists(claude_md_path) if claude_md_path else False
-        logger.info(f"Building options: cwd={self.cwd}, CLAUDE.md exists={claude_md_exists}")
         options = ClaudeAgentOptions(max_turns=max_turns, cwd=self.cwd, setting_sources=["project"])
 
         self._configure_thinking(options)
         self._configure_sandbox(options)
         self._configure_tools(options, allowed_tools, disallowed_tools)
 
-        # Always read CLAUDE.md so project instructions are honoured even
-        # when the SDK's setting_sources mechanism doesn't inject them.
-        claude_md = self._read_claude_md()
-
         if model:
             options.model = model
         if system_prompt:
-            if claude_md:
-                system_prompt = system_prompt + "\n\n" + claude_md
             if WRAP_INTERMEDIATE_THINKING:
                 system_prompt = system_prompt + RESPONSE_SENTINEL_INSTRUCTION
             options.system_prompt = {"type": "text", "text": system_prompt}
         elif WRAP_INTERMEDIATE_THINKING:
-            parts = []
-            if claude_md:
-                parts.append(claude_md)
-            parts.append(RESPONSE_SENTINEL_INSTRUCTION.strip())
-            options.system_prompt = {"type": "text", "text": "\n\n".join(parts)}
-        elif claude_md:
-            # No custom prompt and no wrapping, but CLAUDE.md exists.
-            # Don't rely on the SDK preset to load it — inject explicitly.
-            options.system_prompt = {"type": "text", "text": claude_md}
+            # Can't append to a preset, so use the instruction as a standalone
+            # system prompt. The SDK still applies its built-in behaviour.
+            options.system_prompt = {"type": "text", "text": RESPONSE_SENTINEL_INSTRUCTION.strip()}
         else:
             options.system_prompt = {"type": "preset", "preset": "claude_code"}
         if permission_mode:
@@ -516,15 +484,6 @@ class ClaudeCodeCLI:
                     resume=resume,
                 )
 
-                logger.info(
-                    "SDK query options: cwd=%s, setting_sources=%s, "
-                    "system_prompt=%s, permission_mode=%s, model=%s",
-                    options.cwd,
-                    options.setting_sources,
-                    options.system_prompt,
-                    options.permission_mode,
-                    options.model,
-                )
                 async for message in query(prompt=prompt, options=options):
                     logger.debug(f"Raw SDK message type: {type(message)}")
                     logger.debug(f"Raw SDK message: {message}")
