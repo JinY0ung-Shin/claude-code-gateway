@@ -473,6 +473,7 @@ class Pipeline:
                 completed = False
                 line_count = 0
                 tool_names: dict = {}
+                tool_pending: dict = {}
                 for line in resp.iter_lines():
                     line_count += 1
                     if line_count <= 5 or (line.startswith("data: ") and "completed" in line):
@@ -519,31 +520,35 @@ class Pipeline:
                         name = event.get("name", "")
                         if tool_id:
                             tool_names[tool_id] = name
-                        escaped = html.escape(name)
-                        event_json = json.dumps(event, indent=2, ensure_ascii=False)
-                        # Use 4 backticks to prevent content with ``` from breaking the fence
-                        yield (
-                            "\n<details>\n"
-                            f"<summary>Tool: {escaped}</summary>\n\n"
-                            f"````json\n{event_json}\n````\n\n"
-                            "</details>\n"
+                        # Store tool_use args for pairing with result later
+                        tool_args = json.dumps(
+                            event.get("input", event.get("arguments", {})),
+                            ensure_ascii=False,
                         )
+                        tool_pending[tool_id] = {"name": name, "args": tool_args}
 
                     elif event_type == "response.tool_result":
                         tool_id = event.get("tool_use_id", "")
-                        tool_name = tool_names.get(tool_id, "")
+                        pending = tool_pending.pop(tool_id, {})
+                        name = pending.get("name", tool_names.get(tool_id, ""))
+                        args = pending.get("args", "{}")
+                        result_content = str(event.get("content", ""))[:500]
                         is_error = event.get("is_error", False)
-                        content = event.get("content", "")
-                        prefix = "Error" if is_error else "Tool Result"
-                        escaped = html.escape(tool_name) if tool_name else ""
-                        label = f"{prefix}: {escaped}" if escaped else prefix
-                        result_text = str(content)[:500]
-                        # Use 4 backticks to prevent content with ``` from breaking the fence
+                        # Escape for HTML attributes
+                        esc_name = html.escape(name)
+                        esc_args = html.escape(args)
+                        esc_result = html.escape(result_content)
+                        status = "error" if is_error else "complete"
+                        # Use Open WebUI's native tool_calls details format.
+                        # The ToolCallDisplay component handles streaming gracefully.
                         yield (
-                            "\n<details>\n"
-                            f"<summary>{label}</summary>\n\n"
-                            f"````\n{result_text}\n````\n\n"
-                            "</details>\n"
+                            f'\n\n<details type="tool_calls" name="{esc_name}"'
+                            f' arguments="{esc_args}"'
+                            f' result="{esc_result}"'
+                            f' status="{status}"'
+                            f' done="true">\n'
+                            f"<summary>Tool: {esc_name}</summary>\n"
+                            f"</details>\n\n"
                         )
 
                     elif event_type == "response.completed":
@@ -557,10 +562,7 @@ class Pipeline:
                                 "model": self.valves.MODEL,
                             }
                             log.debug("Chain updated: chat=%s, response_id=%s", chat_id, new_id)
-                        # Invisible content that forces the markdown renderer
-                        # to finalize the last HTML block (e.g. </details>).
-                        # A bare "\n" is ignored; a zero-width space is real content.
-                        yield "\n\u200b"
+                        yield "\n"
 
                     elif event_type in ("response.failed", "error"):
                         error = event.get("response", {}).get("error", {})
