@@ -340,11 +340,7 @@ class Pipe:
                                 think_open = True
                             yield f"[Tool: {name}]\n"
                         else:
-                            event_json = json.dumps(event, indent=2, ensure_ascii=False)
-                            yield (
-                                f"\n\n<details>\n<summary>🔧 {name}</summary>\n\n"
-                                f"```json\n{event_json}\n```\n\n</details>\n"
-                            )
+                            yield f"\n\n> 🔧 **{name}**\n"
                         continue
 
                     if event_type == "response.tool_result":
@@ -364,11 +360,8 @@ class Pipe:
                             label = f"{prefix} Result"
                             if tool_name:
                                 label += f" ({tool_name})"
-                            event_json = json.dumps(event, indent=2, ensure_ascii=False)
-                            yield (
-                                f"\n<details>\n<summary>{label}</summary>\n\n"
-                                f"```json\n{event_json}\n```\n\n</details>\n"
-                            )
+                            snippet = str(content)[:200]
+                            yield f"\n> {label}: {snippet}\n"
                         continue
 
                     if event_type == "response.task_started":
