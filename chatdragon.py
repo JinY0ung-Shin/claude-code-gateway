@@ -14,6 +14,7 @@ license: MIT
 import hashlib
 import html
 import json
+import re
 import logging
 import os
 import threading
@@ -547,24 +548,43 @@ class Pipeline:
                         pending = tool_pending.pop(tool_id, {})
                         name = pending.get("name", tool_names.get(tool_id, ""))
                         args = pending.get("args", "{}")
-                        result_content = str(event.get("content", ""))[:500]
                         is_error = event.get("is_error", False)
-                        # Escape for HTML attributes
-                        esc_name = html.escape(name)
-                        esc_args = html.escape(args)
-                        esc_result = html.escape(result_content)
-                        status = "error" if is_error else "complete"
-                        # Use Open WebUI's native tool_calls details format.
-                        # The ToolCallDisplay component handles streaming gracefully.
-                        yield (
-                            f'\n\n<details type="tool_calls" name="{esc_name}"'
-                            f' arguments="{esc_args}"'
-                            f' result="{esc_result}"'
-                            f' status="{status}"'
-                            f' done="true">\n'
-                            f"<summary>Tool: {esc_name}</summary>\n"
-                            f"</details>\n\n"
-                        )
+                        # Extract text from content — may be a string, list of
+                        # content blocks, or empty/None.
+                        raw_content = event.get("content", "")
+                        if isinstance(raw_content, list):
+                            result_content = " ".join(
+                                b.get("text", "") if isinstance(b, dict) else str(b)
+                                for b in raw_content
+                            ).strip()
+                        else:
+                            result_content = str(raw_content or "").strip()
+                        if not result_content and is_error:
+                            result_content = event.get("error", "Tool execution failed")
+                        # SDK overflow: result was too large but tool did succeed.
+                        # Show a short note in the details block instead of the
+                        # full verbose SDK message.
+                        if result_content.startswith("Error: result ("):
+                            m = re.search(r"\(([0-9,]+) characters?\)", result_content)
+                            chars = m.group(1) if m else "large"
+                            result_content = f"Result truncated ({chars} chars)"
+                        result_content = result_content[:500]
+                        if is_error:
+                            yield f"\n\n**Error** (`{name}`): {result_content}\n\n"
+                        else:
+                            # Escape for HTML attributes
+                            esc_name = html.escape(name)
+                            esc_args = html.escape(args)
+                            esc_result = html.escape(result_content)
+                            yield (
+                                f'\n\n<details type="tool_calls" name="{esc_name}"'
+                                f' arguments="{esc_args}"'
+                                f' result="{esc_result}"'
+                                f' status="complete"'
+                                f' done="true">\n'
+                                f"<summary>Tool: {esc_name}</summary>\n"
+                                f"</details>\n\n"
+                            )
 
                     elif event_type == "response.completed":
                         completed = True
