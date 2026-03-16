@@ -1265,55 +1265,55 @@ class TestSentinelStreamFilter:
     """Test SentinelStreamFilter cross-chunk sentinel detection."""
 
     def test_sentinel_in_single_chunk(self):
-        sf = SentinelStreamFilter("<final_response>", replacement="</think>\n")
-        text, triggered = sf.feed("before<final_response>after")
+        sf = SentinelStreamFilter("<response>", replacement="</think>\n")
+        text, triggered = sf.feed("before<response>after")
         assert triggered is True
         assert text == "before</think>\nafter"
         assert sf.triggered is True
 
     def test_sentinel_across_two_chunks(self):
-        sf = SentinelStreamFilter("<final_response>", replacement="[END]")
-        t1, tr1 = sf.feed("hello<final_")
+        sf = SentinelStreamFilter("<response>", replacement="[END]")
+        t1, tr1 = sf.feed("hello<resp")
         assert tr1 is False
         assert "hello" in t1
-        t2, tr2 = sf.feed("response>world")
+        t2, tr2 = sf.feed("onse>world")
         assert tr2 is True
         assert "world" in t2
         assert "[END]" in (t1 + t2)
 
     def test_sentinel_across_many_chunks(self):
-        sf = SentinelStreamFilter("<final_response>", replacement="X")
+        sf = SentinelStreamFilter("<response>", replacement="X")
         parts = []
-        for ch in "<final_response>done":
+        for ch in "<response>done":
             t, tr = sf.feed(ch)
             parts.append(t)
         combined = "".join(parts)
         assert "X" in combined
         assert "done" in combined
-        assert "<final_response>" not in combined
+        assert "<response>" not in combined
 
     def test_no_sentinel_passes_through(self):
-        sf = SentinelStreamFilter("<final_response>", replacement="X")
+        sf = SentinelStreamFilter("<response>", replacement="X")
         t, tr = sf.feed("no sentinel here")
         assert tr is False
         assert t == "no sentinel here"
         assert sf.triggered is False
 
     def test_partial_mismatch_flushed(self):
-        sf = SentinelStreamFilter("<final_response>", replacement="X")
-        t, tr = sf.feed("<final_xyz")
+        sf = SentinelStreamFilter("<response>", replacement="X")
+        t, tr = sf.feed("<resXYZ")
         assert tr is False
-        assert "<final_xyz" in t
+        assert "<resXYZ" in t
 
     def test_flush_returns_remaining_buffer(self):
-        sf = SentinelStreamFilter("<final_response>", replacement="X")
-        t, _ = sf.feed("text<final_re")
+        sf = SentinelStreamFilter("<response>", replacement="X")
+        t, _ = sf.feed("text<respo")
         remaining = sf.flush()
-        assert "final_re" in remaining
+        assert "respo" in remaining
 
     def test_after_trigger_passes_through(self):
-        sf = SentinelStreamFilter("<final_response>", replacement="X")
-        sf.feed("<final_response>")
+        sf = SentinelStreamFilter("<response>", replacement="X")
+        sf.feed("<response>")
         t, tr = sf.feed("more text")
         assert tr is False  # already triggered, not again
         assert t == "more text"
@@ -1363,7 +1363,7 @@ async def test_stream_chunks_wrap_thinking_sentinel_splits_think():
             "type": "stream_event",
             "event": {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "<final_response>"},
+                "delta": {"type": "text_delta", "text": "<response>"},
             },
         }
         yield {
@@ -1400,7 +1400,7 @@ async def test_stream_chunks_wrap_thinking_sentinel_splits_think():
     assert "<think>" in all_content
     assert "</think>" in all_content
     # Sentinel token itself should NOT appear in output
-    assert "<final_response>" not in all_content
+    assert "<response>" not in all_content
     think_end = all_content.index("</think>")
     inside = all_content[:think_end]
     outside = all_content[think_end + len("</think>"):]
@@ -1421,14 +1421,14 @@ async def test_stream_chunks_wrap_thinking_sentinel_chunked():
             "type": "stream_event",
             "event": {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "intermediate<final_"},
+                "delta": {"type": "text_delta", "text": "intermediate<resp"},
             },
         }
         yield {
             "type": "stream_event",
             "event": {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "response>final answer"},
+                "delta": {"type": "text_delta", "text": "onse>final answer"},
             },
         }
 
@@ -1455,7 +1455,7 @@ async def test_stream_chunks_wrap_thinking_sentinel_chunked():
         delta = parsed.get("choices", [{}])[0].get("delta", {})
         all_content += delta.get("content", "")
 
-    assert "<final_response>" not in all_content
+    assert "<response>" not in all_content
     assert "</think>" in all_content
     assert "intermediate" in all_content
     assert "final answer" in all_content
@@ -1595,7 +1595,7 @@ async def test_stream_chunks_wrap_thinking_suppresses_sdk_think_tags():
             "type": "stream_event",
             "event": {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": "<final_response>Answer"},
+                "delta": {"type": "text_delta", "text": "<response>Answer"},
             },
         }
 

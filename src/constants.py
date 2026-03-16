@@ -44,11 +44,11 @@ WRAP_INTERMEDIATE_THINKING = os.getenv("WRAP_INTERMEDIATE_THINKING", "false").lo
 # Sentinel token the model emits before its final answer.
 # The streaming layer detects this across chunked deltas, replaces it with
 # </think>, and streams the remaining text as visible content.
-RESPONSE_SENTINEL = "<final_response>"
+RESPONSE_SENTINEL = "<response>"
 RESPONSE_SENTINEL_INSTRUCTION = (
     "\n\n## Response Format\n"
     "When you have finished all tool calls and are ready to write your final answer, "
-    "you MUST output the exact token `<final_response>` on its own line before your answer. "
+    "you MUST output the exact token `<response>` on its own line before your answer. "
     "Do not include any other text on that line. Begin your answer immediately after."
 )
 

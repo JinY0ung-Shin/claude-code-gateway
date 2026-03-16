@@ -246,7 +246,7 @@ class SentinelStreamFilter:
 
     Usage::
 
-        sf = SentinelStreamFilter("<final_response>", replacement="</think>\\n")
+        sf = SentinelStreamFilter("<response>", replacement="</think>\\n")
         for delta in deltas:
             text, triggered = sf.feed(delta)
             # *text* is safe to emit; *triggered* is True once the sentinel
@@ -732,7 +732,7 @@ async def stream_chunks(
 
     # When WRAP_INTERMEDIATE_THINKING is enabled, a <think> block is opened at
     # the first content and all text streams live inside it.  The model is
-    # instructed (via system prompt) to emit a sentinel token (<final_response>)
+    # instructed (via system prompt) to emit a sentinel token (<response>)
     # before its final answer.  SentinelStreamFilter detects the token across
     # chunked deltas, replaces it with </think>, and from that point on all
     # text streams as visible content — no buffering, no duplication.
