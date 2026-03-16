@@ -347,6 +347,7 @@ class Pipeline:
         text_buffer = ""
         BUFFER_SIZE = 50
         RESPONSE_TAG = "<response>"
+        TOOL_DETAILS_PREFIX = "\n\n<details "
 
         try:
             if thought_wrapped:
@@ -356,6 +357,15 @@ class Pipeline:
             for chunk in self._stream_responses_raw_sync(chat_id, payload, instructions_hash):
                 if thought_wrapped:
                     if response_tag_sent:
+                        yield chunk
+                    elif chunk.startswith(TOOL_DETAILS_PREFIX):
+                        # Tool call <details> blocks must bypass the buffer
+                        # entirely. The buffer holds back the last 10 chars to
+                        # avoid splitting "<response>", but that also splits
+                        # "</details>" and breaks Open WebUI rendering.
+                        if text_buffer:
+                            yield text_buffer
+                            text_buffer = ""
                         yield chunk
                     else:
                         text_buffer += chunk
@@ -406,6 +416,11 @@ class Pipeline:
                 for chunk in self._stream_responses_raw_sync(chat_id, payload, instructions_hash):
                     if thought_wrapped:
                         if response_tag_sent:
+                            yield chunk
+                        elif chunk.startswith(TOOL_DETAILS_PREFIX):
+                            if text_buffer:
+                                yield text_buffer
+                                text_buffer = ""
                             yield chunk
                         else:
                             text_buffer += chunk
@@ -562,11 +577,7 @@ class Pipeline:
                                 "model": self.valves.MODEL,
                             }
                             log.debug("Chain updated: chat=%s, response_id=%s", chat_id, new_id)
-                        # Yield trailing content to force Open WebUI's streaming
-                        # markdown renderer to do a final re-parse. Without this,
-                        # the last <details> block may not render because the
-                        # marked tokenizer's debounced update never fires.
-                        yield "\n\n\u200b"
+                        yield "\n"
 
                     elif event_type in ("response.failed", "error"):
                         error = event.get("response", {}).get("error", {})
