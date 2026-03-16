@@ -579,7 +579,7 @@ class Pipeline:
                             f' result="{esc_result}"'
                             f' status="{status}"'
                             f' done="true">\n'
-                            f"<summary>Tool: {esc_name}</summary>\n"
+                            f"<summary>View Result from {esc_name}</summary>\n"
                             f"</details>\n\n"
                         )
 
