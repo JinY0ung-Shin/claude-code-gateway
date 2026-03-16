@@ -569,14 +569,18 @@ class Pipeline:
                         # Always render as a <details> block — errors show
                         # with status="error" so the UI can style them.
                         esc_name = html.escape(name)
+                        esc_args = html.escape(args)
+                        esc_result = html.escape(result_content)
                         status = "error" if is_error else "complete"
                         yield (
                             f'\n\n<details type="tool_calls" name="{esc_name}"'
                             f' status="{status}"'
                             f' done="true">\n'
-                            f"<summary>View Result from {esc_name}</summary>\n\n"
-                            f"**Arguments**\n````json\n{args}\n````\n\n"
-                            f"**Result**\n````\n{result_content}\n````\n\n"
+                            f"<summary>View Result from {esc_name}</summary>\n"
+                            f"<p><b>Arguments</b></p>\n"
+                            f"<pre><code>{esc_args}</code></pre>\n"
+                            f"<p><b>Result</b></p>\n"
+                            f"<pre><code>{esc_result}</code></pre>\n"
                             f"</details>\n\n"
                         )
 
