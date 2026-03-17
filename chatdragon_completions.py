@@ -286,11 +286,28 @@ class Pipeline:
                         except json.JSONDecodeError:
                             continue
 
+                        # Log every SSE event's top-level keys so we can
+                        # spot tool_use arriving in an unexpected shape.
+                        evt_keys = list(event.keys())
+                        if "system_event" in evt_keys or "choices" not in evt_keys:
+                            log.info(
+                                "[PIPE-DEBUG] sse_event keys=%s preview=%s",
+                                evt_keys, data_str[:300],
+                            )
+
                         # Handle system_event (tool_use, tool_result, task events)
                         sys_event = event.get("system_event")
                         if sys_event:
                             event_type = sys_event.get("type", "")
-                            log.info("[PIPE] system_event type=%s", event_type)
+                            log.info(
+                                "[PIPE] system_event type=%s keys=%s",
+                                event_type, list(sys_event.keys()),
+                            )
+                            if event_type in ("tool_use", "tool_result"):
+                                log.info(
+                                    "[PIPE-DEBUG] %s raw_event=%s",
+                                    event_type, json.dumps(sys_event, default=str)[:500],
+                                )
                             rendered = self._render_system_event(
                                 event_type, sys_event, tool_names, tool_pending,
                             )

@@ -539,6 +539,15 @@ class Pipeline:
 
                     event_type = event.get("type", "")
 
+                    if event_type not in (
+                        "response.output_text.delta",
+                        "response.output_text.done",
+                    ):
+                        log.info(
+                            "[PIPE-DEBUG] sse_event type=%s preview=%s",
+                            event_type, json.dumps(event, default=str)[:300],
+                        )
+
                     if event_type == "response.output_text.delta":
                         delta = event.get("delta", "")
                         if delta:
@@ -573,6 +582,10 @@ class Pipeline:
                     elif event_type == "response.tool_use":
                         tool_id = event.get("tool_use_id", "")
                         name = event.get("name", "")
+                        log.info(
+                            "[PIPE-DEBUG] tool_use received: id=%s name=%s event=%s",
+                            tool_id, name, json.dumps(event, default=str)[:500],
+                        )
                         if tool_id:
                             tool_names[tool_id] = name
                             active_tools.add(tool_id)
