@@ -225,6 +225,10 @@ class Pipeline:
         text_buffer = ""
         BUFFER_SIZE = 50
         RESPONSE_TAG = "<response>"
+        TOOL_DETAILS_PREFIX = "\n\n<details "
+
+        tool_names: dict = {}
+        tool_pending: dict = {}
 
         try:
             if thought_wrapped:
@@ -250,6 +254,24 @@ class Pipeline:
                         except json.JSONDecodeError:
                             continue
 
+                        # Handle system_event (tool_use, tool_result, task events)
+                        sys_event = event.get("system_event")
+                        if sys_event:
+                            event_type = sys_event.get("type", "")
+                            rendered = self._render_system_event(
+                                event_type, sys_event, tool_names, tool_pending
+                            )
+                            if rendered:
+                                if thought_wrapped and not response_tag_sent:
+                                    # Tool <details> blocks bypass the buffer
+                                    if text_buffer:
+                                        yield text_buffer
+                                        text_buffer = ""
+                                    yield rendered
+                                else:
+                                    yield rendered
+                            continue
+
                         choices = event.get("choices", [])
                         if not choices:
                             continue
@@ -261,6 +283,12 @@ class Pipeline:
 
                         if thought_wrapped:
                             if response_tag_sent:
+                                yield chunk
+                            elif chunk.startswith(TOOL_DETAILS_PREFIX):
+                                # Tool <details> blocks bypass the buffer
+                                if text_buffer:
+                                    yield text_buffer
+                                    text_buffer = ""
                                 yield chunk
                             else:
                                 text_buffer += chunk
@@ -291,6 +319,84 @@ class Pipeline:
                 if text_buffer:
                     yield text_buffer
                 yield "\n</thought>"
+
+    def _render_system_event(
+        self,
+        event_type: str,
+        event: dict,
+        tool_names: dict,
+        tool_pending: dict,
+    ) -> Optional[str]:
+        """Render a system_event into display text (tool blocks, task progress)."""
+
+        if event_type == "task_started":
+            desc = event.get("description", "")
+            if desc:
+                return f"\n\n> **Task**: {desc}\n"
+
+        elif event_type == "task_progress":
+            desc = event.get("description", "")
+            tool = event.get("last_tool_name", "")
+            usage = event.get("usage") or {}
+            uses = usage.get("tool_uses", 0)
+            text = f"\n> **Progress**: {desc}"
+            if tool:
+                text += f" ({tool}, {uses} uses)"
+            return text + "\n"
+
+        elif event_type == "task_notification":
+            status = event.get("status", "")
+            summary = event.get("summary", "")
+            if summary:
+                return f"\n> **Task {status}**: {summary}\n\n"
+
+        elif event_type == "tool_use":
+            tool_id = event.get("tool_use_id", event.get("id", ""))
+            name = event.get("name", "")
+            if tool_id:
+                tool_names[tool_id] = name
+            tool_args = json.dumps(
+                event.get("input", event.get("arguments", {})),
+                ensure_ascii=False,
+            )
+            tool_pending[tool_id] = {"name": name, "args": tool_args}
+
+        elif event_type == "tool_result":
+            tool_id = event.get("tool_use_id", "")
+            pending = tool_pending.pop(tool_id, {})
+            name = pending.get("name", tool_names.get(tool_id, ""))
+            args = pending.get("args", "{}")
+            is_error = event.get("is_error", False)
+            raw_content = event.get("content", "")
+            if isinstance(raw_content, list):
+                result_content = " ".join(
+                    b.get("text", "") if isinstance(b, dict) else str(b)
+                    for b in raw_content
+                ).strip()
+            else:
+                result_content = str(raw_content or "").strip()
+            if not result_content and is_error:
+                result_content = event.get("error", "Tool execution failed")
+            # SDK overflow: shorten the verbose message.
+            if result_content.startswith("Error: result ("):
+                m = re.search(r"\(([0-9,]+) characters?\)", result_content)
+                chars = m.group(1) if m else "large"
+                result_content = f"Result truncated ({chars} chars)"
+            result_content = result_content[:10000]
+            esc_name = html.escape(name)
+            esc_args = html.escape(args)
+            esc_result = html.escape(result_content)
+            return (
+                f'\n\n<details type="tool_calls"'
+                f' name="{esc_name}"'
+                f' arguments="{esc_args}"'
+                f' result="{esc_result}"'
+                f' done="true">\n'
+                f"<summary>Tool: {esc_name}</summary>\n"
+                f"</details>\n\n"
+            )
+
+        return None
 
     # ------------------------------------------------------------------
     # Non-streaming
