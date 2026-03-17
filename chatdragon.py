@@ -508,6 +508,10 @@ class Pipeline:
                     if event_type == "response.output_text.delta":
                         delta = event.get("delta", "")
                         if delta:
+                            # Filter out SDK "Executing tool..." status lines
+                            stripped = delta.strip()
+                            if stripped.startswith("Executing ") and stripped.endswith("..."):
+                                continue
                             yield delta
 
                     elif event_type == "response.task_started":
@@ -568,13 +572,16 @@ class Pipeline:
                             result_content = f"Result truncated ({chars} chars)"
                         result_content = result_content[:10000]
                         esc_name = html.escape(name)
-                        esc_args = html.escape(args)
-                        esc_result = html.escape(result_content)
+                        # Use single-quote wrappers for arguments and result
+                        # to avoid &quot; inside the value breaking Open WebUI's
+                        # attribute parser.
+                        esc_args = args.replace("'", "&#39;")
+                        esc_result = result_content.replace("'", "&#39;")
                         yield (
                             f'\n\n<details type="tool_calls"'
                             f' name="{esc_name}"'
-                            f' arguments="{esc_args}"'
-                            f' result="{esc_result}"'
+                            f" arguments='{esc_args}'"
+                            f" result='{esc_result}'"
                             f' done="true">\n'
                             f"<summary>Tool: {esc_name}</summary>\n"
                             f"</details>\n\n"

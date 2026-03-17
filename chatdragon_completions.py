@@ -282,6 +282,11 @@ class Pipeline:
                         if not chunk:
                             continue
 
+                        # Filter out SDK "Executing tool..." status lines
+                        stripped = chunk.strip()
+                        if stripped.startswith("Executing ") and stripped.endswith("..."):
+                            continue
+
                         if thought_wrapped:
                             if response_tag_sent:
                                 yield chunk
@@ -380,14 +385,14 @@ class Pipeline:
                 result_content = f"Result truncated ({chars} chars)"
             result_content = result_content[:10000]
             esc_name = html.escape(name)
-            esc_args = html.escape(args)
-            # Use single-quote wrapper for result attribute to avoid
+            # Use single-quote wrappers for arguments and result to avoid
             # &quot; inside the value breaking Open WebUI's parser.
+            esc_args = args.replace("'", "&#39;")
             esc_result = result_content.replace("'", "&#39;")
             return (
                 f'\n\n<details type="tool_calls"'
                 f' name="{esc_name}"'
-                f' arguments="{esc_args}"'
+                f" arguments='{esc_args}'"
                 f" result='{esc_result}'"
                 f' done="true">\n'
                 f"<summary>Tool: {esc_name}</summary>\n"
