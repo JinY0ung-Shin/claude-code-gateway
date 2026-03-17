@@ -25,6 +25,35 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
+# Regex to detect SDK tool-execution noise that leaks into text deltas:
+#   - Bare tool names like "mcp__mcp_router__cql", "Read", "Bash"
+#   - "Executing tool_name..." status lines
+_TOOL_NOISE_RE = re.compile(
+    r"^(?:Executing\s+)?(?:mcp__\w+|Read|Bash|Write|Edit|Glob|Grep|WebFetch|WebSearch|"
+    r"NotebookEdit|Agent|TodoWrite|Skill)(?:\.\.\.)?\s*$"
+)
+
+
+def _is_tool_noise(text: str) -> bool:
+    """Return True if *text* is SDK tool-execution noise."""
+    return bool(text) and _TOOL_NOISE_RE.match(text) is not None
+
+
+def _safe_attr(value: str) -> str:
+    """Sanitize a string for use inside a double-quoted HTML attribute.
+
+    Open WebUI doesn't decode HTML entities in <details type="tool_calls">,
+    so replace chars that break the tag or attribute boundary directly.
+    """
+    return (
+        value
+        .replace('"', "'")
+        .replace("<", "[")
+        .replace(">", "]")
+        .replace("\n", " ")
+        .replace("\r", "")
+    )
+
 
 class ChainResetError(Exception):
     """Raised when the conversation chain needs to be reset and retried."""
@@ -490,6 +519,7 @@ class Pipeline:
                 line_count = 0
                 tool_names: dict = {}
                 tool_pending: dict = {}
+                active_tools: set = set()
                 for line in resp.iter_lines():
                     line_count += 1
                     if line_count <= 5 or (line.startswith("data: ") and "completed" in line):
@@ -508,9 +538,10 @@ class Pipeline:
                     if event_type == "response.output_text.delta":
                         delta = event.get("delta", "")
                         if delta:
-                            # Filter out SDK "Executing tool..." status lines
+                            # Filter SDK tool-execution noise: bare tool
+                            # names and "Executing tool_name..." lines.
                             stripped = delta.strip()
-                            if stripped.startswith("Executing ") and stripped.endswith("..."):
+                            if _is_tool_noise(stripped):
                                 continue
                             yield delta
 
@@ -540,7 +571,7 @@ class Pipeline:
                         name = event.get("name", "")
                         if tool_id:
                             tool_names[tool_id] = name
-                        # Store tool_use args for pairing with result later
+                            active_tools.add(tool_id)
                         tool_args = json.dumps(
                             event.get("input", event.get("arguments", {})),
                             ensure_ascii=False,
@@ -549,13 +580,19 @@ class Pipeline:
 
                     elif event_type == "response.tool_result":
                         tool_id = event.get("tool_use_id", "")
+                        active_tools.discard(tool_id)
                         pending = tool_pending.pop(tool_id, {})
                         name = pending.get("name", tool_names.get(tool_id, ""))
                         args = pending.get("args", "{}")
                         is_error = event.get("is_error", False)
-                        # Extract text from content — may be a string, list of
-                        # content blocks, or empty/None.
                         raw_content = event.get("content", "")
+                        log.info(
+                            "[PIPE] tool_result id=%s name=%s content_type=%s content_preview=%s",
+                            tool_id, name, type(raw_content).__name__,
+                            str(raw_content)[:300],
+                        )
+                        # Extract plain text — content can be a string or
+                        # a list of {"type":"text","text":"..."} blocks.
                         if isinstance(raw_content, list):
                             result_content = " ".join(
                                 b.get("text", "") if isinstance(b, dict) else str(b)
@@ -572,16 +609,17 @@ class Pipeline:
                             result_content = f"Result truncated ({chars} chars)"
                         result_content = result_content[:10000]
                         esc_name = html.escape(name)
-                        # Use single-quote wrappers for arguments and result
-                        # to avoid &quot; inside the value breaking Open WebUI's
-                        # attribute parser.
-                        esc_args = args.replace("'", "&#39;")
-                        esc_result = result_content.replace("'", "&#39;")
+                        safe_args = _safe_attr(args)
+                        safe_result = _safe_attr(result_content)
+                        log.info(
+                            "[PIPE] tool_result rendered: name=%s result_len=%d preview=%s",
+                            name, len(result_content), safe_result[:200],
+                        )
                         yield (
                             f'\n\n<details type="tool_calls"'
                             f' name="{esc_name}"'
-                            f" arguments='{esc_args}'"
-                            f" result='{esc_result}'"
+                            f' arguments="{safe_args}"'
+                            f' result="{safe_result}"'
                             f' done="true">\n'
                             f"<summary>Tool: {esc_name}</summary>\n"
                             f"</details>\n\n"

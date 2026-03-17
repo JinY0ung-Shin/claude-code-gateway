@@ -19,6 +19,40 @@ import re
 from typing import Iterator, Optional
 
 import httpx
+
+# Regex to detect SDK tool-execution noise that leaks into text deltas:
+#   - Bare tool names like "mcp__mcp_router__cql", "Read", "Bash"
+#   - "Executing tool_name..." status lines
+_TOOL_NOISE_RE = re.compile(
+    r"^(?:Executing\s+)?(?:mcp__\w+|Read|Bash|Write|Edit|Glob|Grep|WebFetch|WebSearch|"
+    r"NotebookEdit|Agent|TodoWrite|Skill)(?:\.\.\.)?\s*$"
+)
+
+
+def _is_tool_noise(text: str) -> bool:
+    """Return True if *text* is SDK tool-execution noise."""
+    return bool(text) and _TOOL_NOISE_RE.match(text) is not None
+
+
+def _safe_attr(value: str) -> str:
+    """Sanitize a string for use inside a double-quoted HTML attribute.
+
+    Open WebUI's ``<details type="tool_calls">`` parser does NOT decode
+    HTML entities, so we cannot use ``html.escape()``.  Instead we replace
+    characters that would break the tag structure or attribute boundary:
+      "  → '   (would close the attribute)
+      <  → [   (would open a new HTML tag)
+      >  → ]   (would close a tag)
+      \\n → ' ' (multi-line attributes break many parsers)
+    """
+    return (
+        value
+        .replace('"', "'")
+        .replace("<", "[")
+        .replace(">", "]")
+        .replace("\n", " ")
+        .replace("\r", "")
+    )
 from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
@@ -229,7 +263,6 @@ class Pipeline:
 
         tool_names: dict = {}
         tool_pending: dict = {}
-
         try:
             if thought_wrapped:
                 yield "<thought>\n"
@@ -260,7 +293,7 @@ class Pipeline:
                             event_type = sys_event.get("type", "")
                             log.info("[PIPE] system_event type=%s", event_type)
                             rendered = self._render_system_event(
-                                event_type, sys_event, tool_names, tool_pending
+                                event_type, sys_event, tool_names, tool_pending,
                             )
                             if rendered:
                                 if thought_wrapped and not response_tag_sent:
@@ -282,9 +315,10 @@ class Pipeline:
                         if not chunk:
                             continue
 
-                        # Filter out SDK "Executing tool..." status lines
+                        # Filter SDK tool-execution noise: bare tool
+                        # names and "Executing tool_name..." status lines.
                         stripped = chunk.strip()
-                        if stripped.startswith("Executing ") and stripped.endswith("..."):
+                        if _is_tool_noise(stripped):
                             continue
 
                         if thought_wrapped:
@@ -375,6 +409,11 @@ class Pipeline:
             args = pending.get("args", "{}")
             is_error = event.get("is_error", False)
             raw_content = event.get("content", "") or event.get("output", "") or event.get("result", "")
+            log.info(
+                "[PIPE] tool_result id=%s name=%s content_type=%s content_preview=%s",
+                tool_id, name, type(raw_content).__name__,
+                str(raw_content)[:300],
+            )
             result_content = self._extract_tool_result_text(raw_content)
             if not result_content and is_error:
                 result_content = event.get("error", "Tool execution failed")
@@ -385,15 +424,20 @@ class Pipeline:
                 result_content = f"Result truncated ({chars} chars)"
             result_content = result_content[:10000]
             esc_name = html.escape(name)
-            # Use single-quote wrappers for arguments and result to avoid
-            # &quot; inside the value breaking Open WebUI's parser.
-            esc_args = args.replace("'", "&#39;")
-            esc_result = result_content.replace("'", "&#39;")
+            # Sanitize for HTML attribute safety: Open WebUI doesn't
+            # decode HTML entities, so we can't use html.escape().
+            # Replace chars that would break the tag or attribute boundary.
+            safe_args = _safe_attr(args)
+            safe_result = _safe_attr(result_content)
+            log.info(
+                "[PIPE] tool_result rendered: name=%s result_len=%d preview=%s",
+                name, len(result_content), safe_result[:200],
+            )
             return (
                 f'\n\n<details type="tool_calls"'
                 f' name="{esc_name}"'
-                f" arguments='{esc_args}'"
-                f" result='{esc_result}'"
+                f' arguments="{safe_args}"'
+                f' result="{safe_result}"'
                 f' done="true">\n'
                 f"<summary>Tool: {esc_name}</summary>\n"
                 f"</details>\n\n"
