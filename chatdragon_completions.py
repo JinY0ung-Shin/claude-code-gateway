@@ -37,19 +37,16 @@ def _is_tool_noise(text: str) -> bool:
 def _safe_attr(value: str) -> str:
     """Sanitize a string for use inside a double-quoted HTML attribute.
 
-    Open WebUI's ``<details type="tool_calls">`` parser does NOT decode
-    HTML entities, so we cannot use ``html.escape()``.  Instead we replace
-    characters that would break the tag structure or attribute boundary:
-      "  → '   (would close the attribute)
-      <  → [   (would open a new HTML tag)
-      >  → ]   (would close a tag)
-      \\n → ' ' (multi-line attributes break many parsers)
+    Escapes ``&`` first so that pre-existing HTML entities (e.g. ``&quot;``
+    in Confluence content) are neutralised and cannot be decoded by the
+    browser into characters that break the attribute boundary.
     """
     return (
         value
-        .replace('"', "'")
-        .replace("<", "[")
-        .replace(">", "]")
+        .replace("&", "&amp;")   # must be first to avoid double-escaping
+        .replace('"', "&quot;")  # prevent closing the attribute
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
         .replace("\n", " ")
         .replace("\r", "")
     )
