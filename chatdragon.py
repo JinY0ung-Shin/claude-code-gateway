@@ -593,17 +593,17 @@ class Pipeline:
                             result_content = f"Result truncated ({chars} chars)"
                         result_content = result_content[:10000]
                         esc_name = html.escape(name)
-                        esc_args = html.escape(args)
-                        esc_result = html.escape(result_content)
+                        safe_args = args.replace('"', "'")
+                        safe_result = result_content.replace('"', "'").replace("\n", " ").replace("\r", "")
                         log.info(
-                            "[PIPE] tool_result rendered: name=%s result_len=%d esc_result_preview=%s",
-                            name, len(result_content), esc_result[:200],
+                            "[PIPE] tool_result rendered: name=%s result_len=%d preview=%s",
+                            name, len(result_content), safe_result[:200],
                         )
                         yield (
                             f'\n\n<details type="tool_calls"'
                             f' name="{esc_name}"'
-                            f' arguments="{esc_args}"'
-                            f' result="{esc_result}"'
+                            f' arguments="{safe_args}"'
+                            f' result="{safe_result}"'
                             f' done="true">\n'
                             f"<summary>Tool: {esc_name}</summary>\n"
                             f"</details>\n\n"
