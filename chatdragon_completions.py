@@ -34,22 +34,29 @@ def _is_tool_noise(text: str) -> bool:
     return bool(text) and _TOOL_NOISE_RE.match(text) is not None
 
 
-_HIDDEN_TOOL_LABELS: dict[str, str] = {
-    "read": "파일 확인 중...",
-    "grep": "검색 결과 확인 중...",
-    "glob": "파일 검색 중...",
-    "bash": "명령어 실행 중...",
-    "write": "파일 작성 중...",
-    "edit": "파일 수정 중...",
-    "webfetch": "웹 페이지 확인 중...",
-    "websearch": "웹 검색 중...",
-    "agent": "에이전트 작업 중...",
-}
+def _filter_tool_summary(chunk: str, last_was_newline: bool) -> tuple[str, bool]:
+    """Replace non-MCP ``[Tool: ...]`` / ``[Result: ...]`` summaries with a newline.
 
-
-def _hidden_tool_label(name: str) -> str:
-    """Return a user-friendly Korean label for a hidden SDK tool."""
-    return _HIDDEN_TOOL_LABELS.get(name.lower(), "처리 중...")
+    Returns ``(filtered_chunk, emitted_newline)`` — consecutive newlines are
+    deduplicated so at most one blank line separates text blocks.
+    """
+    s = chunk.strip()
+    is_tool_line = s.startswith("[Tool: ") and s.endswith("]")
+    is_result_line = s.startswith("[Result: ") and s.endswith("]")
+    if is_tool_line or is_result_line:
+        # Extract tool name from [Tool: <name>]
+        if is_tool_line:
+            name = s[7:-1]
+        else:
+            # For [Result: ...] we can't know the tool name directly,
+            # but MCP results are rendered by _render_system_event so
+            # any [Result: ...] reaching here is non-MCP.
+            name = ""
+        if "mcp" not in name.lower():
+            if last_was_newline:
+                return "", True
+            return "\n", True
+    return chunk, False
 
 
 def _safe_attr(value: str) -> str:
@@ -287,7 +294,7 @@ class Pipeline:
         tool_names: dict = {}
         tool_pending: dict = {}
         stream_done = False
-        last_was_hidden_tool = False
+        last_emitted_newline = False
         try:
             if thought_wrapped:
                 yield "<thought>\n"
@@ -338,16 +345,6 @@ class Pipeline:
                                 response_tag_sent = False
 
                             if rendered:
-                                # Dedup consecutive hidden-tool markers
-                                is_marker = (
-                                    "<details><summary>" in rendered
-                                    and rendered.endswith("</details>\n\n")
-                                    and "type=\"tool_calls\"" not in rendered
-                                )
-                                if is_marker and last_was_hidden_tool:
-                                    continue
-                                last_was_hidden_tool = is_marker
-
                                 if thought_wrapped and not response_tag_sent:
                                     # Tool <details> blocks bypass the buffer
                                     if text_buffer:
@@ -367,14 +364,25 @@ class Pipeline:
                         if not chunk:
                             continue
 
-                        # Reset hidden-tool dedup on actual text content
-                        last_was_hidden_tool = False
-
                         # Filter SDK tool-execution noise: bare tool
                         # names and "Executing tool_name..." status lines.
                         stripped = chunk.strip()
                         if _is_tool_noise(stripped):
                             continue
+
+                        # Filter gateway [Tool: ...] / [Result: ...] text
+                        # summaries for non-MCP tools (when WRAP_INTERMEDIATE_
+                        # THINKING is on, these arrive as content deltas).
+                        if thought_wrapped and not response_tag_sent:
+                            chunk, last_emitted_newline = _filter_tool_summary(
+                                chunk, last_emitted_newline,
+                            )
+                            if not chunk:
+                                continue
+
+                        # Reset newline dedup when real text arrives
+                        if chunk != "\n":
+                            last_emitted_newline = False
 
                         if thought_wrapped:
                             if response_tag_sent:
@@ -471,8 +479,9 @@ class Pipeline:
                 ensure_ascii=False,
             )
             tool_pending[tool_id] = {"name": name, "args": tool_args}
-            # Only show MCP tools to the user; skip built-in SDK tools
-            # (Read, Bash, Grep, etc.) whose file paths leak implementation details.
+            # Only render MCP tools; skip built-in SDK tools (Read, Bash,
+            # Grep, etc.) — but keep the pending entry so tool_result can
+            # look up the name for its contextual label.
             if "mcp" not in name.lower():
                 return None
 
@@ -480,11 +489,9 @@ class Pipeline:
             tool_id = event.get("tool_use_id", "")
             pending = tool_pending.pop(tool_id, {})
             name = pending.get("name", tool_names.get(tool_id, ""))
-            # Only show MCP tool results; hide built-in SDK tool results
-            # with a minimal collapse marker so text doesn't run together.
+            # Only show MCP tool results; hide built-in SDK tool results.
             if "mcp" not in name.lower():
-                label = _hidden_tool_label(name)
-                return f"\n\n<details><summary>{label}</summary></details>\n\n"
+                return None
             args = pending.get("args", "{}")
             is_error = event.get("is_error", False)
             raw_content = event.get("content", "") or event.get("output", "") or event.get("result", "")
