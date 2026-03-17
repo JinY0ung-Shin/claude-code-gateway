@@ -39,20 +39,14 @@ def _is_tool_noise(text: str) -> bool:
     return bool(text) and _TOOL_NOISE_RE.match(text) is not None
 
 
-def _safe_attr(value: str) -> str:
-    """Sanitize a string for use inside a double-quoted HTML attribute.
+def _owui_attr(value) -> str:
+    """Encode a value for an Open WebUI ``<details type="tool_calls">`` attribute.
 
-    Open WebUI doesn't decode HTML entities in <details type="tool_calls">,
-    so replace chars that break the tag or attribute boundary directly.
+    Open WebUI uses ``html.escape(json.dumps(value))`` for its own tool-call
+    attributes. The browser decodes the HTML entities when reading the attribute,
+    leaving valid JSON that Open WebUI's JavaScript can ``JSON.parse()``.
     """
-    return (
-        value
-        .replace('"', "'")
-        .replace("<", "[")
-        .replace(">", "]")
-        .replace("\n", " ")
-        .replace("\r", "")
-    )
+    return html.escape(json.dumps(value, ensure_ascii=False))
 
 
 class ChainResetError(Exception):
@@ -608,20 +602,21 @@ class Pipeline:
                             chars = m.group(1) if m else "large"
                             result_content = f"Result truncated ({chars} chars)"
                         result_content = result_content[:10000]
-                        esc_name = html.escape(name)
-                        safe_args = _safe_attr(args)
-                        safe_result = _safe_attr(result_content)
+                        # Encode attributes the same way Open WebUI does:
+                        # html.escape(json.dumps(value)) so the browser decodes
+                        # entities back to valid JSON that JS can parse.
                         log.info(
-                            "[PIPE] tool_result rendered: name=%s result_len=%d preview=%s",
-                            name, len(result_content), safe_result[:200],
+                            "[PIPE] tool_result rendered: name=%s result_len=%d",
+                            name, len(result_content),
                         )
                         yield (
                             f'\n\n<details type="tool_calls"'
-                            f' name="{esc_name}"'
-                            f' arguments="{safe_args}"'
-                            f' result="{safe_result}"'
-                            f' done="true">\n'
-                            f"<summary>Tool: {esc_name}</summary>\n"
+                            f' done="true"'
+                            f' id="{html.escape(tool_id)}"'
+                            f' name="{html.escape(name)}"'
+                            f' arguments="{_owui_attr(args)}"'
+                            f' result="{_owui_attr(result_content)}">\n'
+                            f"<summary>Tool Executed</summary>\n"
                             f"</details>\n\n"
                         )
 

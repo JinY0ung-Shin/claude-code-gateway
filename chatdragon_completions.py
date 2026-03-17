@@ -34,25 +34,14 @@ def _is_tool_noise(text: str) -> bool:
     return bool(text) and _TOOL_NOISE_RE.match(text) is not None
 
 
-def _safe_attr(value: str) -> str:
-    """Sanitize a string for use inside a double-quoted HTML attribute.
+def _owui_attr(value) -> str:
+    """Encode a value for an Open WebUI ``<details type="tool_calls">`` attribute.
 
-    Open WebUI's ``<details type="tool_calls">`` parser does NOT decode
-    HTML entities, so we cannot use ``html.escape()``.  Instead we replace
-    characters that would break the tag structure or attribute boundary:
-      "  → '   (would close the attribute)
-      <  → [   (would open a new HTML tag)
-      >  → ]   (would close a tag)
-      \\n → ' ' (multi-line attributes break many parsers)
+    Open WebUI uses ``html.escape(json.dumps(value))`` for its own tool-call
+    attributes. The browser decodes the HTML entities when reading the attribute,
+    leaving valid JSON that Open WebUI's JavaScript can ``JSON.parse()``.
     """
-    return (
-        value
-        .replace('"', "'")
-        .replace("<", "[")
-        .replace(">", "]")
-        .replace("\n", " ")
-        .replace("\r", "")
-    )
+    return html.escape(json.dumps(value, ensure_ascii=False))
 from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
@@ -408,7 +397,9 @@ class Pipeline:
             name = pending.get("name", tool_names.get(tool_id, ""))
             args = pending.get("args", "{}")
             is_error = event.get("is_error", False)
-            raw_content = event.get("content", "") or event.get("output", "") or event.get("result", "")
+            raw_content = (
+                event.get("content", "") or event.get("output", "") or event.get("result", "")
+            )
             log.info(
                 "[PIPE] tool_result id=%s name=%s content_type=%s content_preview=%s",
                 tool_id, name, type(raw_content).__name__,
@@ -423,23 +414,21 @@ class Pipeline:
                 chars = m.group(1) if m else "large"
                 result_content = f"Result truncated ({chars} chars)"
             result_content = result_content[:10000]
-            esc_name = html.escape(name)
-            # Sanitize for HTML attribute safety: Open WebUI doesn't
-            # decode HTML entities, so we can't use html.escape().
-            # Replace chars that would break the tag or attribute boundary.
-            safe_args = _safe_attr(args)
-            safe_result = _safe_attr(result_content)
+            # Encode attributes the same way Open WebUI does:
+            # html.escape(json.dumps(value)) so the browser decodes entities
+            # back to valid JSON that JS can parse.
             log.info(
-                "[PIPE] tool_result rendered: name=%s result_len=%d preview=%s",
-                name, len(result_content), safe_result[:200],
+                "[PIPE] tool_result rendered: name=%s result_len=%d",
+                name, len(result_content),
             )
             return (
                 f'\n\n<details type="tool_calls"'
-                f' name="{esc_name}"'
-                f' arguments="{safe_args}"'
-                f' result="{safe_result}"'
-                f' done="true">\n'
-                f"<summary>Tool: {esc_name}</summary>\n"
+                f' done="true"'
+                f' id="{html.escape(tool_id)}"'
+                f' name="{html.escape(name)}"'
+                f' arguments="{_owui_attr(args)}"'
+                f' result="{_owui_attr(result_content)}">\n'
+                f"<summary>Tool Executed</summary>\n"
                 f"</details>\n\n"
             )
 
