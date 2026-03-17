@@ -34,30 +34,6 @@ def _is_tool_noise(text: str) -> bool:
     return bool(text) and _TOOL_NOISE_RE.match(text) is not None
 
 
-def _filter_tool_summary(chunk: str, last_was_newline: bool) -> tuple[str, bool]:
-    """Replace non-MCP ``[Tool: ...]`` / ``[Result: ...]`` summaries with a newline.
-
-    Returns ``(filtered_chunk, emitted_newline)`` — consecutive newlines are
-    deduplicated so at most one blank line separates text blocks.
-    """
-    s = chunk.strip()
-    is_tool_line = s.startswith("[Tool: ") and s.endswith("]")
-    is_result_line = s.startswith("[Result: ") and s.endswith("]")
-    if is_tool_line or is_result_line:
-        # Extract tool name from [Tool: <name>]
-        if is_tool_line:
-            name = s[7:-1]
-        else:
-            # For [Result: ...] we can't know the tool name directly,
-            # but MCP results are rendered by _render_system_event so
-            # any [Result: ...] reaching here is non-MCP.
-            name = ""
-        if "mcp" not in name.lower():
-            if last_was_newline:
-                return "", True
-            return "\n", True
-    return chunk, False
-
 
 def _safe_attr(value: str) -> str:
     """Sanitize a string for use inside a double-quoted HTML attribute.
@@ -294,7 +270,6 @@ class Pipeline:
         tool_names: dict = {}
         tool_pending: dict = {}
         stream_done = False
-        last_emitted_newline = False
         try:
             if thought_wrapped:
                 yield "<thought>\n"
@@ -369,20 +344,6 @@ class Pipeline:
                         stripped = chunk.strip()
                         if _is_tool_noise(stripped):
                             continue
-
-                        # Filter gateway [Tool: ...] / [Result: ...] text
-                        # summaries for non-MCP tools (when WRAP_INTERMEDIATE_
-                        # THINKING is on, these arrive as content deltas).
-                        if thought_wrapped and not response_tag_sent:
-                            chunk, last_emitted_newline = _filter_tool_summary(
-                                chunk, last_emitted_newline,
-                            )
-                            if not chunk:
-                                continue
-
-                        # Reset newline dedup when real text arrives
-                        if chunk != "\n":
-                            last_emitted_newline = False
 
                         if thought_wrapped:
                             if response_tag_sent:
