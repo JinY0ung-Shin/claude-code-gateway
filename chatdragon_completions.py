@@ -34,7 +34,6 @@ def _is_tool_noise(text: str) -> bool:
     return bool(text) and _TOOL_NOISE_RE.match(text) is not None
 
 
-
 def _safe_attr(value: str) -> str:
     """Sanitize a string for use inside a double-quoted HTML attribute.
 
@@ -98,10 +97,6 @@ class Pipeline:
         THOUGHT_WRAPPED_INSTRUCTION: bool = Field(
             default=True,
             description="Inject instruction for model to output <response> tag when done thinking",
-        )
-        SHOW_NON_MCP_TOOLS: bool = Field(
-            default=False,
-            description="Show built-in SDK tool events (Read, Bash, Grep, etc.) in the streamed output",
         )
 
     def __init__(self):
@@ -262,30 +257,19 @@ class Pipeline:
         thought_opened = False
         response_tag_sent = False
         text_buffer = ""
-        # Buffer for post-sentinel text: after <response> fires we hold text
-        # briefly so that if tool activity follows we can re-absorb it into
-        # the <thought> block (keeps everything in one collapsible).
-        post_response_buffer = ""
-        POST_RESPONSE_LIMIT = 200
         BUFFER_SIZE = 50
         RESPONSE_TAG = "<response>"
         TOOL_DETAILS_PREFIX = "\n\n<details "
 
         tool_names: dict = {}
         tool_pending: dict = {}
-        stream_done = False
         try:
             if thought_wrapped:
                 yield "<thought>\n"
                 thought_opened = True
 
             url = f"{self.valves.BASE_URL.rstrip('/')}/v1/chat/completions"
-            # Use a generous read timeout for streaming: the SDK may pause
-            # for extended periods during auto-compact or long tool runs.
-            stream_timeout = httpx.Timeout(
-                connect=30.0, read=None, write=30.0, pool=30.0,
-            )
-            with httpx.Client(timeout=stream_timeout) as client:
+            with httpx.Client(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
                 with client.stream("POST", url, json=payload, headers=self._make_headers()) as resp:
                     if resp.status_code != 200:
                         body_text = resp.read().decode()
@@ -296,7 +280,6 @@ class Pipeline:
                             continue
                         data_str = line[6:]
                         if data_str.strip() == "[DONE]":
-                            stream_done = True
                             break
 
                         try:
@@ -309,20 +292,9 @@ class Pipeline:
                         if sys_event:
                             event_type = sys_event.get("type", "")
                             log.info("[PIPE] system_event type=%s", event_type)
-                            is_tool_event = event_type in ("tool_use", "tool_result")
                             rendered = self._render_system_event(
                                 event_type, sys_event, tool_names, tool_pending,
                             )
-
-                            # Tool activity after <response> → re-open thought
-                            # and absorb the buffered text back inside it.
-                            if thought_wrapped and response_tag_sent and is_tool_event:
-                                yield "<thought>\n"
-                                if post_response_buffer:
-                                    yield post_response_buffer
-                                    post_response_buffer = ""
-                                response_tag_sent = False
-
                             if rendered:
                                 if thought_wrapped and not response_tag_sent:
                                     # Tool <details> blocks bypass the buffer
@@ -351,12 +323,7 @@ class Pipeline:
 
                         if thought_wrapped:
                             if response_tag_sent:
-                                # Buffer post-response text briefly so we can
-                                # re-absorb into thought if tools follow.
-                                post_response_buffer += chunk
-                                if len(post_response_buffer) >= POST_RESPONSE_LIMIT:
-                                    yield post_response_buffer
-                                    post_response_buffer = ""
+                                yield chunk
                             elif chunk.startswith(TOOL_DETAILS_PREFIX):
                                 # Tool <details> blocks bypass the buffer
                                 if text_buffer:
@@ -368,14 +335,13 @@ class Pipeline:
                                 if RESPONSE_TAG in text_buffer:
                                     idx = text_buffer.index(RESPONSE_TAG)
                                     before = text_buffer[:idx]
-                                    after = text_buffer[idx + len(RESPONSE_TAG) :]
+                                    after = text_buffer[idx + len(RESPONSE_TAG):]
                                     if before:
                                         yield before
                                     yield "\n</thought>\n\n"
                                     response_tag_sent = True
-                                    post_response_buffer = ""
                                     if after:
-                                        post_response_buffer = after
+                                        yield after
                                     text_buffer = ""
                                 elif len(text_buffer) > BUFFER_SIZE:
                                     safe_len = len(text_buffer) - len(RESPONSE_TAG)
@@ -384,15 +350,6 @@ class Pipeline:
                                         text_buffer = text_buffer[safe_len:]
                         else:
                             yield chunk
-
-                    # Flush remaining post-response buffer at stream end
-                    if post_response_buffer:
-                        yield post_response_buffer
-                        post_response_buffer = ""
-
-                    if not stream_done:
-                        log.warning("[STREAM] Stream ended without [DONE] marker")
-                        yield "\n\n[Warning: Response may be incomplete]"
 
         except Exception as e:
             log.error("Stream error: %s", e)
@@ -444,19 +401,11 @@ class Pipeline:
                 ensure_ascii=False,
             )
             tool_pending[tool_id] = {"name": name, "args": tool_args}
-            # By default only render MCP tools; skip built-in SDK tools
-            # (Read, Bash, Grep, etc.) unless SHOW_NON_MCP_TOOLS is on.
-            # Always keep the pending entry so tool_result can look up the name.
-            if "mcp" not in name.lower() and not self.valves.SHOW_NON_MCP_TOOLS:
-                return None
 
         elif event_type == "tool_result":
             tool_id = event.get("tool_use_id", "")
             pending = tool_pending.pop(tool_id, {})
             name = pending.get("name", tool_names.get(tool_id, ""))
-            # Hide built-in SDK tool results unless SHOW_NON_MCP_TOOLS is on.
-            if "mcp" not in name.lower() and not self.valves.SHOW_NON_MCP_TOOLS:
-                return None
             args = pending.get("args", "{}")
             is_error = event.get("is_error", False)
             raw_content = event.get("content", "") or event.get("output", "") or event.get("result", "")
