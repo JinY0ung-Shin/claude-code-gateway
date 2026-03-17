@@ -34,6 +34,24 @@ def _is_tool_noise(text: str) -> bool:
     return bool(text) and _TOOL_NOISE_RE.match(text) is not None
 
 
+_HIDDEN_TOOL_LABELS: dict[str, str] = {
+    "read": "파일 확인 중...",
+    "grep": "검색 결과 확인 중...",
+    "glob": "파일 검색 중...",
+    "bash": "명령어 실행 중...",
+    "write": "파일 작성 중...",
+    "edit": "파일 수정 중...",
+    "webfetch": "웹 페이지 확인 중...",
+    "websearch": "웹 검색 중...",
+    "agent": "에이전트 작업 중...",
+}
+
+
+def _hidden_tool_label(name: str) -> str:
+    """Return a user-friendly Korean label for a hidden SDK tool."""
+    return _HIDDEN_TOOL_LABELS.get(name.lower(), "처리 중...")
+
+
 def _safe_attr(value: str) -> str:
     """Sanitize a string for use inside a double-quoted HTML attribute.
 
@@ -269,7 +287,6 @@ class Pipeline:
         tool_names: dict = {}
         tool_pending: dict = {}
         stream_done = False
-        HIDDEN_TOOL_MARKER = "\n\n<details><summary>⚙️</summary></details>\n\n"
         last_was_hidden_tool = False
         try:
             if thought_wrapped:
@@ -322,7 +339,11 @@ class Pipeline:
 
                             if rendered:
                                 # Dedup consecutive hidden-tool markers
-                                is_marker = rendered == HIDDEN_TOOL_MARKER
+                                is_marker = (
+                                    "<details><summary>" in rendered
+                                    and rendered.endswith("</details>\n\n")
+                                    and "type=\"tool_calls\"" not in rendered
+                                )
                                 if is_marker and last_was_hidden_tool:
                                     continue
                                 last_was_hidden_tool = is_marker
@@ -462,7 +483,8 @@ class Pipeline:
             # Only show MCP tool results; hide built-in SDK tool results
             # with a minimal collapse marker so text doesn't run together.
             if "mcp" not in name.lower():
-                return "\n\n<details><summary>⚙️</summary></details>\n\n"
+                label = _hidden_tool_label(name)
+                return f"\n\n<details><summary>{label}</summary></details>\n\n"
             args = pending.get("args", "{}")
             is_error = event.get("is_error", False)
             raw_content = event.get("content", "") or event.get("output", "") or event.get("result", "")
