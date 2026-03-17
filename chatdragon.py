@@ -75,10 +75,6 @@ class Pipeline:
             default=True,
             description="Inject instruction for model to output <response> tag when done thinking",
         )
-        MAX_TURNS: int = Field(
-            default=6,
-            description="Maximum agentic turns (tool-use rounds) before forcing a final answer",
-        )
 
     def __init__(self):
         self.valves = self.Valves()
@@ -321,7 +317,6 @@ class Pipeline:
                 "model": self.valves.MODEL,
                 "input": current_input,
                 "stream": use_stream,
-                "max_turns": self.valves.MAX_TURNS,
             }
             if prev_response_id:
                 payload["previous_response_id"] = prev_response_id
