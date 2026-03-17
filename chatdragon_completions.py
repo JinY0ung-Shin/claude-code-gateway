@@ -32,6 +32,27 @@ _TOOL_NOISE_RE = re.compile(
 def _is_tool_noise(text: str) -> bool:
     """Return True if *text* is SDK tool-execution noise."""
     return bool(text) and _TOOL_NOISE_RE.match(text) is not None
+
+
+def _safe_attr(value: str) -> str:
+    """Sanitize a string for use inside a double-quoted HTML attribute.
+
+    Open WebUI's ``<details type="tool_calls">`` parser does NOT decode
+    HTML entities, so we cannot use ``html.escape()``.  Instead we replace
+    characters that would break the tag structure or attribute boundary:
+      "  → '   (would close the attribute)
+      <  → [   (would open a new HTML tag)
+      >  → ]   (would close a tag)
+      \\n → ' ' (multi-line attributes break many parsers)
+    """
+    return (
+        value
+        .replace('"', "'")
+        .replace("<", "[")
+        .replace(">", "]")
+        .replace("\n", " ")
+        .replace("\r", "")
+    )
 from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
@@ -403,12 +424,11 @@ class Pipeline:
                 result_content = f"Result truncated ({chars} chars)"
             result_content = result_content[:10000]
             esc_name = html.escape(name)
-            # Sanitize for HTML attribute safety: Open WebUI's parser
-            # doesn't decode HTML entities, so avoid &quot; / &#10; etc.
-            # Replace " with ' and collapse newlines to keep content on
-            # one line inside the attribute value.
-            safe_args = args.replace('"', "'")
-            safe_result = result_content.replace('"', "'").replace("\n", " ").replace("\r", "")
+            # Sanitize for HTML attribute safety: Open WebUI doesn't
+            # decode HTML entities, so we can't use html.escape().
+            # Replace chars that would break the tag or attribute boundary.
+            safe_args = _safe_attr(args)
+            safe_result = _safe_attr(result_content)
             log.info(
                 "[PIPE] tool_result rendered: name=%s result_len=%d preview=%s",
                 name, len(result_content), safe_result[:200],

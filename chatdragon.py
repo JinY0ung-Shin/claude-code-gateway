@@ -39,6 +39,22 @@ def _is_tool_noise(text: str) -> bool:
     return bool(text) and _TOOL_NOISE_RE.match(text) is not None
 
 
+def _safe_attr(value: str) -> str:
+    """Sanitize a string for use inside a double-quoted HTML attribute.
+
+    Open WebUI doesn't decode HTML entities in <details type="tool_calls">,
+    so replace chars that break the tag or attribute boundary directly.
+    """
+    return (
+        value
+        .replace('"', "'")
+        .replace("<", "[")
+        .replace(">", "]")
+        .replace("\n", " ")
+        .replace("\r", "")
+    )
+
+
 class ChainResetError(Exception):
     """Raised when the conversation chain needs to be reset and retried."""
     pass
@@ -593,8 +609,8 @@ class Pipeline:
                             result_content = f"Result truncated ({chars} chars)"
                         result_content = result_content[:10000]
                         esc_name = html.escape(name)
-                        safe_args = args.replace('"', "'")
-                        safe_result = result_content.replace('"', "'").replace("\n", " ").replace("\r", "")
+                        safe_args = _safe_attr(args)
+                        safe_result = _safe_attr(result_content)
                         log.info(
                             "[PIPE] tool_result rendered: name=%s result_len=%d preview=%s",
                             name, len(result_content), safe_result[:200],
