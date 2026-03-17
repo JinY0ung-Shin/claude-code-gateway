@@ -269,6 +269,8 @@ class Pipeline:
         tool_names: dict = {}
         tool_pending: dict = {}
         stream_done = False
+        HIDDEN_TOOL_MARKER = "\n\n<details><summary>⚙️</summary></details>\n\n"
+        last_was_hidden_tool = False
         try:
             if thought_wrapped:
                 yield "<thought>\n"
@@ -319,6 +321,12 @@ class Pipeline:
                                 response_tag_sent = False
 
                             if rendered:
+                                # Dedup consecutive hidden-tool markers
+                                is_marker = rendered == HIDDEN_TOOL_MARKER
+                                if is_marker and last_was_hidden_tool:
+                                    continue
+                                last_was_hidden_tool = is_marker
+
                                 if thought_wrapped and not response_tag_sent:
                                     # Tool <details> blocks bypass the buffer
                                     if text_buffer:
@@ -337,6 +345,9 @@ class Pipeline:
                         chunk = delta.get("content", "")
                         if not chunk:
                             continue
+
+                        # Reset hidden-tool dedup on actual text content
+                        last_was_hidden_tool = False
 
                         # Filter SDK tool-execution noise: bare tool
                         # names and "Executing tool_name..." status lines.
@@ -448,9 +459,10 @@ class Pipeline:
             tool_id = event.get("tool_use_id", "")
             pending = tool_pending.pop(tool_id, {})
             name = pending.get("name", tool_names.get(tool_id, ""))
-            # Only show MCP tool results; hide built-in SDK tool results.
+            # Only show MCP tool results; hide built-in SDK tool results
+            # with a minimal collapse marker so text doesn't run together.
             if "mcp" not in name.lower():
-                return None
+                return "\n\n<details><summary>⚙️</summary></details>\n\n"
             args = pending.get("args", "{}")
             is_error = event.get("is_error", False)
             raw_content = event.get("content", "") or event.get("output", "") or event.get("result", "")
