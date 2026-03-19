@@ -7,7 +7,7 @@ services:
     volumes:
       - ~/.claude:/root/.claude
       # Shared image directory for VQA — must match the Open WebUI container mount
-      - shared_images:/app/shared_images
+      - /home/webui_data/serving_images:/app/shared_images
       # Optional: Mount a specific workspace directory
       # Uncomment and modify the line below to use a custom workspace
       # - ./workspace:/workspace
@@ -16,6 +16,3 @@ services:
       # Optional: Set Claude's working directory (defaults to isolated temp dir)
       # Uncomment and modify the line below to set a custom working directory
       # - CLAUDE_CWD=/workspace
-
-volumes:
-  shared_images:

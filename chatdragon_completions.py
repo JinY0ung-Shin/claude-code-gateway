@@ -116,6 +116,12 @@ class Pipeline:
             default="/app/shared_images",
             description="Shared directory for saving uploaded images (must be mounted in both Open WebUI and gateway containers)",
         )
+        VQA_IMAGE_REPORT_DIR: str = Field(
+            default="",
+            description="Path prefix to use when reporting image paths to the gateway/MCP tool. "
+            "If empty, VQA_IMAGE_DIR is used as-is. Set this to the host path "
+            "(e.g. /home/webui_data/serving_images) when the MCP tool runs outside the container.",
+        )
 
         @field_validator("TOOL_DISPLAY", mode="before")
         @classmethod
@@ -268,8 +274,14 @@ class Pipeline:
                                     filename = f"{uuid4().hex}.{ext}"
                                     filepath = image_dir / filename
                                     filepath.write_bytes(base64.b64decode(encoded))
-                                    saved_paths.append(str(filepath))
-                                    log.info("[IMAGE] saved image part[%d] -> %s", j, filepath)
+                                    # Report the path the MCP tool should use
+                                    report_dir = self.valves.VQA_IMAGE_REPORT_DIR
+                                    if report_dir:
+                                        report_path = str(Path(report_dir) / filename)
+                                    else:
+                                        report_path = str(filepath)
+                                    saved_paths.append(report_path)
+                                    log.info("[IMAGE] saved image part[%d] -> %s (report: %s)", j, filepath, report_path)
                                 except Exception:
                                     log.exception("[IMAGE] failed to save image part[%d]", j)
                                     new_content.append(part)
