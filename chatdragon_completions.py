@@ -99,7 +99,7 @@ class Pipeline:
         )
         TOOL_DISPLAY: str = Field(
             default="detailed",
-            description="Tool display mode: 'detailed' (full <details> block with args/result) or 'simple' (short status message)",
+            description="Tool display mode: 'detailed' (full <details> block with args/result), 'simple' (short status message), or 'mcp_only' (show only MCP tool results)",
         )
 
     def __init__(self):
@@ -456,6 +456,9 @@ class Pipeline:
                 result_content = f"Result truncated ({chars} chars)"
             result_content = result_content[:10000]
             esc_name = html.escape(name)
+
+            if self.valves.TOOL_DISPLAY == "mcp_only" and not name.startswith("mcp__"):
+                return None
 
             if self.valves.TOOL_DISPLAY == "simple":
                 status = "error" if is_error else "done"
