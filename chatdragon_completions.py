@@ -72,8 +72,8 @@ class Pipeline:
             description="Claude model to use (e.g. sonnet, opus, haiku)",
         )
         TIMEOUT: int = Field(
-            default=300,
-            description="Request timeout in seconds",
+            default=600,
+            description="Total request timeout in seconds (increase for heavy MCP/search workloads)",
         )
         # Context injection settings
         INJECT_USER_CONTEXT: bool = Field(
@@ -268,7 +268,17 @@ class Pipeline:
                 thought_opened = True
 
             url = f"{self.valves.BASE_URL.rstrip('/')}/v1/chat/completions"
-            with httpx.Client(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
+            # Use a generous read timeout — the gateway sends SSE keepalive
+            # comments every ~15s during idle periods (tool execution, context
+            # compaction), so a 60s read timeout catches truly dead connections
+            # while not killing active-but-quiet streams.
+            timeout = httpx.Timeout(
+                connect=30.0,
+                read=60.0,
+                write=30.0,
+                pool=self.valves.TIMEOUT,
+            )
+            with httpx.Client(timeout=timeout) as client:
                 with client.stream("POST", url, json=payload, headers=self._make_headers()) as resp:
                     if resp.status_code != 200:
                         body_text = resp.read().decode()
