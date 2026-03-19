@@ -12,12 +12,16 @@ description: .
 license: MIT
 """
 
+import base64
 import html
 import json
 import logging
+import os
 import random
 import re
+from pathlib import Path
 from typing import Iterator, Optional
+from uuid import uuid4
 
 from pydantic import field_validator
 
@@ -107,6 +111,10 @@ class Pipeline:
         MCP_TOOL_ONLY: bool = Field(
             default=False,
             description="Only display MCP tool results; hide all built-in SDK tools (Read, Bash, Edit, etc.)",
+        )
+        VQA_IMAGE_DIR: str = Field(
+            default="/app/shared_images",
+            description="Shared directory for saving uploaded images (must be mounted in both Open WebUI and gateway containers)",
         )
 
         @field_validator("TOOL_DISPLAY", mode="before")
@@ -236,22 +244,51 @@ class Pipeline:
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "user":
                 content = messages[i].get("content", "")
-                # Debug: log what Open WebUI actually sends for image messages
+                # Save uploaded images to shared volume and replace image_url
+                # parts with text references so the text-only LLM can call the
+                # VQA tool with the file path.
                 if isinstance(content, list):
-                    log.info("[IMAGE-DEBUG] content is list, %d parts:", len(content))
+                    image_dir = Path(self.valves.VQA_IMAGE_DIR)
+                    image_dir.mkdir(parents=True, exist_ok=True)
+                    new_content = []
+                    saved_paths: list[str] = []
                     for j, part in enumerate(content):
-                        if isinstance(part, dict):
-                            ptype = part.get("type", "?")
-                            if ptype == "image_url":
-                                img = part.get("image_url", {})
-                                url = img.get("url", "") if isinstance(img, dict) else str(img)
-                                log.info("[IMAGE-DEBUG]   part[%d] type=image_url url_prefix=%s len=%d", j, url[:80], len(url))
+                        if isinstance(part, dict) and part.get("type") == "image_url":
+                            url = ""
+                            img_field = part.get("image_url", {})
+                            if isinstance(img_field, dict):
+                                url = img_field.get("url", "")
+                            elif isinstance(img_field, str):
+                                url = img_field
+                            if url.startswith("data:image/"):
+                                try:
+                                    header, encoded = url.split(",", 1)
+                                    # e.g. data:image/png;base64 -> png
+                                    ext = header.split("/")[1].split(";")[0] if "/" in header else "png"
+                                    filename = f"{uuid4().hex}.{ext}"
+                                    filepath = image_dir / filename
+                                    filepath.write_bytes(base64.b64decode(encoded))
+                                    saved_paths.append(str(filepath))
+                                    log.info("[IMAGE] saved image part[%d] -> %s", j, filepath)
+                                except Exception:
+                                    log.exception("[IMAGE] failed to save image part[%d]", j)
+                                    new_content.append(part)
                             else:
-                                log.info("[IMAGE-DEBUG]   part[%d] type=%s keys=%s", j, ptype, list(part.keys()))
+                                # Non-base64 URL (http, file path, etc.) — keep as-is for VQA
+                                saved_paths.append(url)
+                                log.info("[IMAGE] non-base64 image part[%d] url=%s", j, url[:120])
                         else:
-                            log.info("[IMAGE-DEBUG]   part[%d] raw_type=%s preview=%s", j, type(part).__name__, str(part)[:100])
-                elif isinstance(content, str) and ("<img" in content or "image" in content.lower()):
-                    log.info("[IMAGE-DEBUG] content is str with image reference, preview=%s", content[:200])
+                            new_content.append(part)
+                    if saved_paths:
+                        paths_str = ", ".join(saved_paths)
+                        hint = (
+                            f"[사용자가 이미지를 업로드했습니다. 이미지 경로: {paths_str}. "
+                            f"이미지 분석이 필요하면 vqa_search 도구를 호출하세요.]"
+                        )
+                        new_content.append({"type": "text", "text": hint})
+                        content = new_content
+                        messages[i] = {**messages[i], "content": content}
+                        log.info("[IMAGE] rewrote message with %d image path(s)", len(saved_paths))
                 if isinstance(content, str):
                     content = self._inject_context(
                         content,
