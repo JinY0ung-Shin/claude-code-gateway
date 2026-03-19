@@ -472,30 +472,15 @@ class Pipeline:
                     f"<summary>Tool: {esc_name}</summary>\n"
                     f"</details>\n\n"
                 )
-            log.info(
-                "[PIPE-DEBUG] tool_id=%s name=%s args_len=%d result_len=%d",
-                tool_id, name, len(safe_args), len(safe_result),
-            )
-            log.info(
-                "[PIPE-DEBUG] raw_args=%s",
-                args[:500],
-            )
-            log.info(
-                "[PIPE-DEBUG] safe_args=%s",
-                safe_args[:500],
-            )
-            log.info(
-                "[PIPE-DEBUG] result_preview=%s",
-                result_content[:500],
-            )
-            log.info(
-                "[PIPE-DEBUG] safe_result_preview=%s",
-                safe_result[:500],
-            )
-            log.info(
-                "[PIPE-DEBUG] details_tag_first_300=%s",
-                details_tag[:300],
-            )
+                log.info(
+                    "[PIPE-DEBUG] tool_id=%s name=%s args_len=%d result_len=%d",
+                    tool_id, name, len(safe_args), len(safe_result),
+                )
+                log.info("[PIPE-DEBUG] raw_args=%s", args[:500])
+                log.info("[PIPE-DEBUG] safe_args=%s", safe_args[:500])
+                log.info("[PIPE-DEBUG] result_preview=%s", result_content[:500])
+                log.info("[PIPE-DEBUG] safe_result_preview=%s", safe_result[:500])
+            log.info("[PIPE-DEBUG] details_tag_first_300=%s", details_tag[:300])
             return details_tag
 
         return None
