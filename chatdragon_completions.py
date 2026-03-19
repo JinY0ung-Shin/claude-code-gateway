@@ -18,6 +18,8 @@ import logging
 import re
 from typing import Iterator, Optional
 
+from pydantic import field_validator
+
 import httpx
 
 # Regex to detect SDK tool-execution noise that leaks into text deltas:
@@ -105,6 +107,14 @@ class Pipeline:
             default=False,
             description="Only display MCP tool results; hide all built-in SDK tools (Read, Bash, Edit, etc.)",
         )
+
+        @field_validator("TOOL_DISPLAY", mode="before")
+        @classmethod
+        def _coerce_tool_display(cls, v):
+            """Accept legacy string values from stored configs."""
+            if isinstance(v, str):
+                return v.lower() not in ("simple", "mcp_only", "false", "0", "no", "off")
+            return v
 
     def __init__(self):
         self.valves = self.Valves()
