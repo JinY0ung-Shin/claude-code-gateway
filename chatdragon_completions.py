@@ -15,8 +15,11 @@ license: MIT
 import html
 import json
 import logging
+import random
 import re
 from typing import Iterator, Optional
+
+from pydantic import field_validator
 
 import httpx
 
@@ -97,10 +100,22 @@ class Pipeline:
             default=True,
             description="Inject instruction for model to output <response> tag when done thinking",
         )
-        TOOL_DISPLAY: str = Field(
-            default="detailed",
-            description="Tool display mode: 'detailed' (full <details> block with args/result), 'simple' (short status message), or 'mcp_only' (show only MCP tool results)",
+        TOOL_DISPLAY: bool = Field(
+            default=True,
+            description="Show detailed tool blocks with args and result; when off, show a short status line instead",
         )
+        MCP_TOOL_ONLY: bool = Field(
+            default=False,
+            description="Only display MCP tool results; hide all built-in SDK tools (Read, Bash, Edit, etc.)",
+        )
+
+        @field_validator("TOOL_DISPLAY", mode="before")
+        @classmethod
+        def _coerce_tool_display(cls, v):
+            """Accept legacy string values from stored configs."""
+            if isinstance(v, str):
+                return v.lower() not in ("simple", "mcp_only", "false", "0", "no", "off")
+            return v
 
     def __init__(self):
         self.valves = self.Valves()
@@ -495,12 +510,12 @@ class Pipeline:
             result_content = result_content[:10000]
             esc_name = html.escape(name)
 
-            if self.valves.TOOL_DISPLAY == "mcp_only" and not name.startswith("mcp__"):
-                return None
+            if self.valves.MCP_TOOL_ONLY and not name.startswith("mcp__"):
+                return None, 0
 
-            if self.valves.TOOL_DISPLAY == "simple":
-                status = "error" if is_error else "done"
-                details_tag = f"\n> **Tool**: {esc_name} — {status}\n"
+            if not self.valves.TOOL_DISPLAY:
+                friendly = self._friendly_tool_notification(name, is_error)
+                details_tag = f"\n> {friendly}\n"
             else:
                 safe_args = _safe_attr(args)
                 safe_result = _safe_attr(result_content)
@@ -525,6 +540,77 @@ class Pipeline:
             return details_tag
 
         return None
+
+    # ── Friendly tool notification helpers ──────────────────────────────
+    # Maps raw MCP tool-name suffix → friendly display name.
+    _MCP_LABELS: dict[str, str] = {
+        "mlm_cql": "MLM Confluence",
+        "cql": "Confluence",
+        "basic_knowledge": "knowledge base",
+        "jira_search": "Jira",
+        "jira_issue": "Jira issue",
+        "web_search": "the web",
+        "slack_search": "Slack",
+        "google_drive": "Google Drive",
+    }
+
+    # Built-in SDK tools → friendly display name.
+    _BUILTIN_LABELS: dict[str, str] = {
+        "read": "a file",
+        "edit": "a file",
+        "write": "a file",
+        "bash": "a command",
+        "grep": "the codebase",
+        "glob": "files",
+        "todowrite": "the task list",
+        "webfetch": "a webpage",
+        "websearch": "the web",
+        "notebookedit": "a notebook",
+    }
+
+    # Completion templates – "{label}" is replaced with the tool's display name.
+    _DONE_TEMPLATES: list[str] = [
+        "Finished searching {label}",
+        "Done looking through {label}",
+        "Completed {label} search",
+        "Searched {label} successfully",
+        "Got results from {label}",
+        "Pulled data from {label}",
+        "Wrapped up {label} lookup",
+        "{label} search complete",
+        "Retrieved results from {label}",
+        "All done with {label}",
+    ]
+
+    _ERROR_TEMPLATES: list[str] = [
+        "Failed to search {label}",
+        "Something went wrong with {label}",
+        "Could not complete {label} search",
+    ]
+
+    @classmethod
+    def _tool_label(cls, raw_name: str) -> str:
+        """Return a short, human-friendly label for a tool name."""
+        lower = raw_name.lower()
+        if lower in cls._BUILTIN_LABELS:
+            return cls._BUILTIN_LABELS[lower]
+        if lower.startswith("mcp__"):
+            parts = raw_name.split("__")
+            tool_key = parts[-1] if len(parts) >= 3 else parts[-1]
+            if tool_key.lower() in cls._MCP_LABELS:
+                return cls._MCP_LABELS[tool_key.lower()]
+            return tool_key.replace("_", " ")
+        return raw_name
+
+    @classmethod
+    def _friendly_tool_notification(cls, raw_name: str, is_error: bool = False) -> str:
+        """Build a single-tool notification (fallback when buffer is unavailable)."""
+        label = cls._tool_label(raw_name)
+        if is_error:
+            template = random.choice(cls._ERROR_TEMPLATES)
+            return f"❌ {template.format(label=label)}"
+        template = random.choice(cls._DONE_TEMPLATES)
+        return f"✅ {template.format(label=label)}"
 
     @staticmethod
     def _extract_tool_result_text(raw_content) -> str:
