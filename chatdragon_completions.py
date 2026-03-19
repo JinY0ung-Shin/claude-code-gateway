@@ -97,9 +97,13 @@ class Pipeline:
             default=True,
             description="Inject instruction for model to output <response> tag when done thinking",
         )
-        TOOL_DISPLAY: str = Field(
-            default="detailed",
-            description="Tool display mode: 'detailed' (full <details> block with args/result), 'simple' (short status message), or 'mcp_only' (show only MCP tool results)",
+        TOOL_DISPLAY: bool = Field(
+            default=True,
+            description="Show detailed tool blocks with args and result; when off, show a short status line instead",
+        )
+        MCP_TOOL_ONLY: bool = Field(
+            default=False,
+            description="Only display MCP tool results; hide all built-in SDK tools (Read, Bash, Edit, etc.)",
         )
 
     def __init__(self):
@@ -457,10 +461,10 @@ class Pipeline:
             result_content = result_content[:10000]
             esc_name = html.escape(name)
 
-            if self.valves.TOOL_DISPLAY == "mcp_only" and not name.startswith("mcp__"):
+            if self.valves.MCP_TOOL_ONLY and not name.startswith("mcp__"):
                 return None
 
-            if self.valves.TOOL_DISPLAY == "simple":
+            if not self.valves.TOOL_DISPLAY:
                 status = "error" if is_error else "done"
                 details_tag = f"\n> **Tool**: {esc_name} — {status}\n"
             else:
