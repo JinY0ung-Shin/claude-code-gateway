@@ -703,6 +703,10 @@ async def _keepalive_wrapper(
 
     If *interval* is ``<= 0`` keepalives are disabled and the source is
     yielded through unchanged.
+
+    The implementation keeps a single pending ``__anext__()`` task alive
+    across timeout cycles so that the upstream generator / stream read is
+    never cancelled by a keepalive timeout.
     """
     if interval <= 0:
         async for item in source:
@@ -710,14 +714,29 @@ async def _keepalive_wrapper(
         return
 
     ait = source.__aiter__()
-    while True:
-        try:
-            item = await asyncio.wait_for(ait.__anext__(), timeout=interval)
-            yield item
-        except asyncio.TimeoutError:
-            yield _SSE_KEEPALIVE
-        except StopAsyncIteration:
-            break
+    next_task: asyncio.Task | None = None
+    try:
+        while True:
+            if next_task is None:
+                next_task = asyncio.ensure_future(ait.__anext__())
+            done, _ = await asyncio.wait({next_task}, timeout=interval)
+            if done:
+                try:
+                    yield next_task.result()
+                except StopAsyncIteration:
+                    break
+                finally:
+                    next_task = None
+            else:
+                # Timeout — upstream task is still pending; emit keepalive
+                yield _SSE_KEEPALIVE
+    finally:
+        if next_task is not None and not next_task.done():
+            next_task.cancel()
+            try:
+                await next_task
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
 
 
 # ---------------------------------------------------------------------------
