@@ -2,11 +2,11 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.security import HTTPAuthorizationCredentials
 
 from src.models import SessionListResponse
-from src.auth import security
+from src.auth import verify_api_key, security
 from src.session_manager import session_manager
 
 router = APIRouter()
@@ -14,9 +14,11 @@ router = APIRouter()
 
 @router.get("/v1/sessions/stats")
 async def get_session_stats(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ):
     """Get session manager statistics."""
+    await verify_api_key(request, credentials)
     stats = session_manager.get_stats()
     return {
         "session_stats": stats,
@@ -26,17 +28,23 @@ async def get_session_stats(
 
 
 @router.get("/v1/sessions")
-async def list_sessions(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+async def list_sessions(
+    request: Request, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+):
     """List all active sessions."""
+    await verify_api_key(request, credentials)
     sessions = session_manager.list_sessions()
     return SessionListResponse(sessions=sessions, total=len(sessions))
 
 
 @router.get("/v1/sessions/{session_id}")
 async def get_session(
-    session_id: str, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+    request: Request,
+    session_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ):
     """Get information about a specific session."""
+    await verify_api_key(request, credentials)
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -46,9 +54,12 @@ async def get_session(
 
 @router.delete("/v1/sessions/{session_id}")
 async def delete_session(
-    session_id: str, credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+    request: Request,
+    session_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ):
     """Delete a specific session."""
+    await verify_api_key(request, credentials)
     deleted = session_manager.delete_session(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")

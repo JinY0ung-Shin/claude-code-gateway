@@ -1,5 +1,5 @@
 """
-Constants and configuration for Claude Code OpenAI Wrapper.
+Constants and configuration for Claude Code Gateway.
 
 Single source of truth for shared configuration values.
 Backend-specific constants live in ``src/backends/<name>/constants.py``.

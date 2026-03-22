@@ -18,6 +18,7 @@ import src.routes.chat as chat_module
 import src.routes.messages as messages_module
 import src.routes.responses as responses_module
 import src.routes.general as general_module
+import src.routes.sessions as sessions_module
 from src.auth import auth_manager
 from src.backend_registry import BackendRegistry
 from src.backends.claude.constants import CLAUDE_TOOLS
@@ -73,6 +74,7 @@ def test_health_endpoint_returns_request_id_header():
 
     assert response.status_code == 200
     assert response.json()["status"] == "healthy"
+    assert response.json()["service"] == "claude-code-gateway"
     assert response.headers["x-request-id"]
 
 
@@ -300,9 +302,9 @@ def test_models_compatibility_version_and_root_endpoints():
     )
     assert version_response.status_code == 200
     assert version_response.json()["api_version"] == "v1"
+    assert version_response.json()["service"] == "claude-code-gateway"
     assert root_response.status_code == 200
-    assert "Claude Code OpenAI Wrapper" in root_response.text
-    assert "claude_cli" in root_response.text
+    assert "Claude Code Gateway" in root_response.text
 
 
 def test_list_mcp_servers_filters_safe_fields():
@@ -356,6 +358,7 @@ def test_debug_request_endpoint_reports_parse_and_validation_results():
 
 
 def test_auth_status_endpoint_uses_runtime_key_source():
+    original_main_key = getattr(main, "runtime_api_key", None)
     main.runtime_api_key = "runtime-key"
 
     auth_info = {"method": "claude_cli", "status": {"valid": True}}
@@ -375,6 +378,7 @@ def test_auth_status_endpoint_uses_runtime_key_source():
         assert response.json()["server_info"]["api_key_source"] == "runtime"
     finally:
         auth_manager.runtime_api_key = original_runtime_key
+        main.runtime_api_key = original_main_key
 
 
 def test_session_endpoints_and_http_exception_handler():
@@ -399,6 +403,7 @@ def test_session_endpoints_and_http_exception_handler():
 
     with (
         client_context() as (client, _mock_cli),
+        patch.object(sessions_module, "verify_api_key", new_callable=AsyncMock),
         patch.object(
             main.session_manager,
             "get_stats",

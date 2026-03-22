@@ -33,6 +33,7 @@ from src.constants import (
     DEFAULT_HOST,
     MAX_REQUEST_SIZE,
 )
+from src import __version__
 from src.mcp_config import get_mcp_servers
 from src.request_logger import request_logger, RequestLogEntry
 from src.routes.deps import truncate_image_data
@@ -216,9 +217,9 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="Claude Code OpenAI API Wrapper",
-    description="OpenAI-compatible API for Claude Code",
-    version="1.0.0",
+    title="Claude Code Gateway",
+    description="Multi-backend API gateway for Claude Code and Codex",
+    version=__version__,
     lifespan=lifespan,
 )
 

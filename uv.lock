@@ -312,7 +312,7 @@ wheels = [
 ]
 
 [[package]]
-name = "claude-code-openai-wrapper"
+name = "claude-code-gateway"
 version = "2.2.0"
 source = { editable = "." }
 dependencies = [

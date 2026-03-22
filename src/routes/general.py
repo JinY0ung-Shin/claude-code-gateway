@@ -17,6 +17,7 @@ from src.auth import (
     auth_manager,
     get_claude_code_auth_info,
     get_all_backends_auth_info,
+    validate_backend_auth,
 )
 from src.parameter_validator import CompatibilityReporter
 from src.backends import BackendRegistry
@@ -102,7 +103,7 @@ async def health_check(request: Request):
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "service": "claude-code-openai-wrapper",
+        "service": "claude-code-gateway",
         "backends": list(BackendRegistry.all_backends().keys()),
     }
 
@@ -115,7 +116,7 @@ async def version_info(request: Request):
 
     return {
         "version": __version__,
-        "service": "claude-code-openai-wrapper",
+        "service": "claude-code-gateway",
         "api_version": "v1",
     }
 
@@ -125,7 +126,23 @@ async def root():
     """Landing page with API documentation."""
     from src import __version__
 
-    auth_info = get_claude_code_auth_info()
+    # Build aggregated auth status across all registered backends
+    registered = list(BackendRegistry.all_backends().keys())
+    any_valid = False
+    auth_method_parts = []
+    for backend_name in registered:
+        try:
+            valid, _info = validate_backend_auth(backend_name)
+            if valid:
+                any_valid = True
+                auth_method_parts.append(backend_name)
+        except Exception:
+            pass
+
+    auth_info = {
+        "method": ", ".join(auth_method_parts) if auth_method_parts else "none",
+        "status": {"valid": any_valid},
+    }
     return HTMLResponse(content=build_root_page(__version__, auth_info, DEFAULT_PORT))
 
 

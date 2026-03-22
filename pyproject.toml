@@ -1,7 +1,7 @@
 [project]
 name = "claude-code-gateway"
-version = "0.1.0"
-description = "OpenAI API-compatible wrapper for Claude Code"
+version = "2.2.0"
+description = "Multi-backend API gateway for Claude Code and Codex"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"

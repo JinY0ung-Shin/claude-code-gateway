@@ -15,7 +15,7 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <meta name="color-scheme" content="light dark">
-        <title>Claude Code OpenAI Wrapper</title>
+        <title>Claude Code Gateway</title>
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
         <style>
             :root {{
@@ -103,6 +103,7 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
             }}
             .badge-post {{ background: rgba(34, 197, 94, 0.15); color: #16a34a; }}
             .badge-get {{ background: rgba(59, 130, 246, 0.15); color: #2563eb; }}
+            .badge-delete {{ background: rgba(239, 68, 68, 0.15); color: #ef4444; }}
             /* Header layout */
             .header-flex {{
                 display: flex;
@@ -170,6 +171,17 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
             .endpoint-item:last-child {{ border-bottom: none; }}
             .endpoint-item code {{ flex: 1; }}
             .endpoint-desc {{ color: var(--pico-muted-color); font-size: 0.85rem; }}
+            /* Endpoint group label */
+            .endpoint-group {{
+                font-size: 0.75rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                color: var(--pico-muted-color);
+                padding: 0.75rem 0 0.25rem;
+                border-bottom: none;
+            }}
+            .endpoint-group:first-child {{ padding-top: 0; }}
             /* Details accordion styling */
             details {{
                 border: 1px solid var(--border-color);
@@ -222,6 +234,7 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                 display: flex;
                 justify-content: center;
                 gap: 2rem;
+                flex-wrap: wrap;
             }}
             footer a {{
                 display: flex;
@@ -420,8 +433,8 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                         </div>
                     </div>
                     <div>
-                        <h1 style="margin:0;">Claude Code OpenAI Wrapper</h1>
-                        <p style="margin:0;color:var(--pico-muted-color);">OpenAI-compatible API for Claude</p>
+                        <h1 style="margin:0;">Claude Code Gateway</h1>
+                        <p style="margin:0;color:var(--pico-muted-color);">Multi-backend API gateway for Claude and Codex</p>
                     </div>
                 </div>
                 <div class="header-right">
@@ -434,7 +447,7 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
                         </svg>
                     </button>
-                    <a href="https://github.com/aaronlippold/claude-code-openai-wrapper" target="_blank" rel="noopener noreferrer" class="icon-btn" title="View on GitHub">
+                    <a href="https://github.com/JinY0ung-Shin/claude-code-gateway" target="_blank" rel="noopener noreferrer" class="icon-btn" title="View on GitHub">
                         <svg fill="currentColor" viewBox="0 0 24 24">
                             <path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/>
                         </svg>
@@ -479,7 +492,8 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                     <strong>API Endpoints</strong>
                 </div>
 
-                <!-- Static POST endpoints -->
+                <!-- Chat & Completion -->
+                <div class="endpoint-item endpoint-group">Chat & Completion</div>
                 <div class="endpoint-item">
                     <span class="badge badge-post">POST</span>
                     <code>/v1/chat/completions</code>
@@ -488,15 +502,60 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                 <div class="endpoint-item">
                     <span class="badge badge-post">POST</span>
                     <code>/v1/messages</code>
-                    <span class="endpoint-desc">Anthropic-compatible</span>
+                    <span class="endpoint-desc">Anthropic-compatible (Claude only)</span>
+                </div>
+                <div class="endpoint-item">
+                    <span class="badge badge-post">POST</span>
+                    <code>/v1/responses</code>
+                    <span class="endpoint-desc">Responses API with conversation chaining</span>
                 </div>
 
-                <!-- Expandable GET endpoints -->
+                <!-- Session Management -->
+                <div class="endpoint-item endpoint-group">Sessions</div>
+
+                <details id="sessions" data-endpoint="/v1/sessions" name="endpoints">
+                    <summary>
+                        <span class="badge badge-get">GET</span>
+                        <code>/v1/sessions</code>
+                        <span class="endpoint-desc">List active sessions</span>
+                    </summary>
+                    <div class="content">
+                        <small id="loader-sessions" class="hidden">Loading...</small>
+                        <div id="data-sessions"></div>
+                    </div>
+                </details>
+
+                <details id="session-stats" data-endpoint="/v1/sessions/stats" name="endpoints">
+                    <summary>
+                        <span class="badge badge-get">GET</span>
+                        <code>/v1/sessions/stats</code>
+                        <span class="endpoint-desc">Session statistics</span>
+                    </summary>
+                    <div class="content">
+                        <small id="loader-session-stats" class="hidden">Loading...</small>
+                        <div id="data-session-stats"></div>
+                    </div>
+                </details>
+
+                <div class="endpoint-item">
+                    <span class="badge badge-get">GET</span>
+                    <code>/v1/sessions/{{session_id}}</code>
+                    <span class="endpoint-desc">Get specific session</span>
+                </div>
+                <div class="endpoint-item">
+                    <span class="badge badge-delete">DEL</span>
+                    <code>/v1/sessions/{{session_id}}</code>
+                    <span class="endpoint-desc">Delete session</span>
+                </div>
+
+                <!-- Discovery & Status -->
+                <div class="endpoint-item endpoint-group">Discovery & Status</div>
+
                 <details id="models" data-endpoint="/v1/models" name="endpoints">
                     <summary>
                         <span class="badge badge-get">GET</span>
                         <code>/v1/models</code>
-                        <span class="endpoint-desc">List models</span>
+                        <span class="endpoint-desc">List available models</span>
                     </summary>
                     <div class="content">
                         <small id="loader-models" class="hidden">Loading...</small>
@@ -504,27 +563,27 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                     </div>
                 </details>
 
+                <details id="mcp" data-endpoint="/v1/mcp/servers" name="endpoints">
+                    <summary>
+                        <span class="badge badge-get">GET</span>
+                        <code>/v1/mcp/servers</code>
+                        <span class="endpoint-desc">List MCP servers</span>
+                    </summary>
+                    <div class="content">
+                        <small id="loader-mcp" class="hidden">Loading...</small>
+                        <div id="data-mcp"></div>
+                    </div>
+                </details>
+
                 <details id="auth" data-endpoint="/v1/auth/status" name="endpoints">
                     <summary>
                         <span class="badge badge-get">GET</span>
                         <code>/v1/auth/status</code>
-                        <span class="endpoint-desc">Auth status</span>
+                        <span class="endpoint-desc">Auth &amp; backend status</span>
                     </summary>
                     <div class="content">
                         <small id="loader-auth" class="hidden">Loading...</small>
                         <div id="data-auth"></div>
-                    </div>
-                </details>
-
-                <details id="sessions" data-endpoint="/v1/sessions" name="endpoints">
-                    <summary>
-                        <span class="badge badge-get">GET</span>
-                        <code>/v1/sessions</code>
-                        <span class="endpoint-desc">Active sessions</span>
-                    </summary>
-                    <div class="content">
-                        <small id="loader-sessions" class="hidden">Loading...</small>
-                        <div id="data-sessions"></div>
                     </div>
                 </details>
 
@@ -551,6 +610,12 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                         <div id="data-version"></div>
                     </div>
                 </details>
+
+                <div class="endpoint-item">
+                    <span class="badge badge-post">POST</span>
+                    <code>/v1/compatibility</code>
+                    <span class="endpoint-desc">Check request compatibility</span>
+                </div>
             </article>
 
             <!-- Configuration -->
@@ -570,6 +635,17 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                         <p>ANTHROPIC_AUTH_TOKEN</p>
                     </div>
                 </div>
+                <p style="margin-top:1rem;">Backends:</p>
+                <div class="config-grid">
+                    <div class="config-item">
+                        <code class="green-code">Claude</code>
+                        <p>sonnet, opus, haiku</p>
+                    </div>
+                    <div class="config-item">
+                        <code class="green-code">Codex</code>
+                        <p>codex, codex/&lt;model&gt;</p>
+                    </div>
+                </div>
             </article>
 
             <!-- Footer -->
@@ -586,6 +662,12 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
                         </svg>
                         ReDoc
+                    </a>
+                    <a href="/admin">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
+                        </svg>
+                        Admin
                     </a>
                 </nav>
             </footer>
