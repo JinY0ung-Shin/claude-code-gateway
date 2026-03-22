@@ -37,6 +37,7 @@ DEFAULT_ALLOWED_TOOLS = [
     "Bash",
     "Write",
     "Edit",
+    "Skill",
 ]
 
 # Claude Models

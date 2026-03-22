@@ -47,7 +47,7 @@ class TestDefaultAllowedTools:
         from src.constants import DEFAULT_ALLOWED_TOOLS
 
         # These tools should be in the default allowed set
-        expected_tools = ["Read", "Glob", "Grep", "Bash", "Write", "Edit"]
+        expected_tools = ["Read", "Glob", "Grep", "Bash", "Write", "Edit", "Skill"]
         for tool in expected_tools:
             assert tool in DEFAULT_ALLOWED_TOOLS, f"Expected {tool} in DEFAULT_ALLOWED_TOOLS"
 
