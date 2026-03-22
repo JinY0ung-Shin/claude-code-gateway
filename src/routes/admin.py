@@ -352,13 +352,14 @@ async def reset_runtime_config(
 @router.get("/api/system-prompt")
 async def get_system_prompt_endpoint(_=Depends(require_admin)):
     """Return the current system prompt and its mode."""
-    from src.system_prompt import get_default_prompt, get_prompt_mode, get_system_prompt
+    from src.system_prompt import get_default_prompt, get_preset_text, get_prompt_mode, get_system_prompt
 
     prompt = get_system_prompt()
     return {
         "mode": get_prompt_mode(),
         "prompt": prompt,
         "default_prompt": get_default_prompt(),
+        "preset_text": get_preset_text(),
         "char_count": len(prompt) if prompt else 0,
     }
 
@@ -375,6 +376,8 @@ async def set_system_prompt_endpoint(
         set_system_prompt(body.prompt)
     except ValueError as e:
         return JSONResponse(status_code=422, content={"error": str(e)})
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": f"Failed to persist: {e}"})
     return {
         "status": "updated",
         "mode": get_prompt_mode(),
@@ -387,5 +390,8 @@ async def reset_system_prompt_endpoint(_=Depends(require_admin)):
     """Reset to file default or claude_code preset."""
     from src.system_prompt import get_prompt_mode, reset_system_prompt
 
-    reset_system_prompt()
+    try:
+        reset_system_prompt()
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": f"Failed to persist: {e}"})
     return {"status": "reset", "mode": get_prompt_mode()}

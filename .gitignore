@@ -61,3 +61,6 @@ test_new_*.py
 test_roocode_compatibility.py
 
 working_dir/
+
+# Persisted runtime data
+data/

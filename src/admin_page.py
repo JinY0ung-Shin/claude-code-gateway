@@ -451,18 +451,40 @@ table td, table th { padding: 8px 12px; border-bottom: 1px solid var(--border); 
           <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem">
             Custom system prompt replaces the <code>claude_code</code> preset. Changes only affect <strong>new sessions</strong>.
           </p>
-          <textarea x-model="systemPromptText"
-            style="width:100%; min-height:200px; max-height:500px; font-family:monospace; font-size:0.8rem;
-              background:var(--bg-card); color:var(--text); border:1px solid var(--border); border-radius:4px;
-              padding:8px; resize:vertical"
-            placeholder="Leave empty to use claude_code preset..."></textarea>
-          <div style="margin-top:0.5rem; display:flex; gap:0.5rem">
-            <button class="btn btn-sm" @click="saveSystemPrompt()"
-              :disabled="!systemPromptText.trim()">Save</button>
-            <span style="font-size:0.75rem; color:var(--text-muted); align-self:center"
-              x-show="systemPromptText.trim()"
-              x-text="systemPromptText.trim().length + ' chars'"></span>
-          </div>
+          <!-- Preset view: read-only display with customize button -->
+          <template x-if="systemPrompt.mode === 'preset' && !systemPromptEditing && systemPrompt.preset_text">
+            <div>
+              <textarea readonly
+                :value="systemPrompt.preset_text"
+                style="width:100%; min-height:200px; max-height:500px; font-family:monospace; font-size:0.8rem;
+                  background:var(--bg-card); color:var(--text-muted); border:1px solid var(--border); border-radius:4px;
+                  padding:8px; resize:vertical; opacity:0.7; cursor:default"></textarea>
+              <div style="margin-top:0.5rem; display:flex; gap:0.5rem; align-items:center">
+                <button class="btn btn-sm" @click="systemPromptText = systemPrompt.preset_text; systemPromptEditing = true">Customize</button>
+                <span style="font-size:0.75rem; color:var(--text-muted)"
+                  x-text="systemPrompt.preset_text.length + ' chars (read-only preset)'"></span>
+              </div>
+            </div>
+          </template>
+          <!-- Edit view: active when customizing or already in custom/file mode -->
+          <template x-if="systemPrompt.mode !== 'preset' || systemPromptEditing || !systemPrompt.preset_text">
+            <div>
+              <textarea x-model="systemPromptText"
+                style="width:100%; min-height:200px; max-height:500px; font-family:monospace; font-size:0.8rem;
+                  background:var(--bg-card); color:var(--text); border:1px solid var(--border); border-radius:4px;
+                  padding:8px; resize:vertical"
+                placeholder="Leave empty to use claude_code preset..."></textarea>
+              <div style="margin-top:0.5rem; display:flex; gap:0.5rem; align-items:center">
+                <button class="btn btn-sm" @click="saveSystemPrompt()"
+                  :disabled="!systemPromptText.trim()">Save</button>
+                <button class="btn btn-sm btn-ghost" @click="systemPromptEditing = false; systemPromptText = ''"
+                  x-show="systemPromptEditing && systemPrompt.mode === 'preset'">Cancel</button>
+                <span style="font-size:0.75rem; color:var(--text-muted)"
+                  x-show="systemPromptText.trim()"
+                  x-text="systemPromptText.trim().length + ' chars'"></span>
+              </div>
+            </div>
+          </template>
         </div>
 
         <div class="grid-2">
@@ -539,8 +561,9 @@ function adminApp() {
     expandedSession: null,
     sessionMessages: null,
     runtimeConfig: {},
-    systemPrompt: { mode: 'preset', prompt: null, default_prompt: null, char_count: 0 },
+    systemPrompt: { mode: 'preset', prompt: null, default_prompt: null, preset_text: null, char_count: 0 },
     systemPromptText: '',
+    systemPromptEditing: false,
 
     async init() {
       // Check if already authenticated (cookie-based)
@@ -730,6 +753,7 @@ function adminApp() {
           const d = await r.json();
           this.systemPrompt = d;
           this.systemPromptText = d.prompt || '';
+          this.systemPromptEditing = false;
         }
       } catch(e) {}
     },

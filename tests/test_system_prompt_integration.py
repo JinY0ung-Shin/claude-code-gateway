@@ -82,10 +82,14 @@ class RecordingClaudeBackend:
 
 
 @pytest.fixture(autouse=True)
-def _reset_system_prompt():
-    """Reset module-level state before/after each test."""
+def _reset_system_prompt(tmp_path):
+    """Reset module-level state and isolate persistence before/after each test."""
     sp._default_prompt = None
     sp._runtime_prompt = None
+    orig_data_dir = sp._DATA_DIR
+    orig_persist = sp._PERSIST_FILE
+    sp._DATA_DIR = tmp_path
+    sp._PERSIST_FILE = tmp_path / "system_prompt.json"
     if _global_limiter is not None:
         try:
             _global_limiter.reset()
@@ -94,6 +98,8 @@ def _reset_system_prompt():
     yield
     sp._default_prompt = None
     sp._runtime_prompt = None
+    sp._DATA_DIR = orig_data_dir
+    sp._PERSIST_FILE = orig_persist
 
 
 @pytest.fixture()

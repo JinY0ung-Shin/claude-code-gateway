@@ -1,18 +1,28 @@
 """Tests for src/system_prompt module."""
 
+import json
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
 
 from src import system_prompt as sp
 
 
 @pytest.fixture(autouse=True)
-def _reset_module():
-    """Reset module-level state before each test."""
+def _reset_module(tmp_path):
+    """Reset module-level state and isolate persistence to a temp dir."""
     sp._default_prompt = None
     sp._runtime_prompt = None
+    orig_data_dir = sp._DATA_DIR
+    orig_persist = sp._PERSIST_FILE
+    sp._DATA_DIR = tmp_path
+    sp._PERSIST_FILE = tmp_path / "system_prompt.json"
     yield
     sp._default_prompt = None
     sp._runtime_prompt = None
+    sp._DATA_DIR = orig_data_dir
+    sp._PERSIST_FILE = orig_persist
 
 
 class TestLoadDefaultPrompt:
@@ -115,3 +125,60 @@ class TestGetPromptMode:
         sp._default_prompt = "file"
         sp.set_system_prompt("custom")
         assert sp.get_prompt_mode() == "custom"
+
+
+class TestPersistence:
+    def test_set_persists_to_file(self):
+        sp.set_system_prompt("persisted prompt")
+        assert sp._PERSIST_FILE.is_file()
+        data = json.loads(sp._PERSIST_FILE.read_text(encoding="utf-8"))
+        assert data["prompt"] == "persisted prompt"
+
+    def test_reset_removes_file(self):
+        sp.set_system_prompt("to delete")
+        assert sp._PERSIST_FILE.is_file()
+        sp.reset_system_prompt()
+        assert not sp._PERSIST_FILE.is_file()
+
+    def test_restore_on_startup(self):
+        sp.set_system_prompt("saved prompt")
+        sp._runtime_prompt = None  # simulate process restart
+        sp.load_default_prompt("")
+        assert sp.get_system_prompt() == "saved prompt"
+        assert sp.get_prompt_mode() == "custom"
+
+    def test_malformed_json_ignored(self):
+        sp._PERSIST_FILE.write_text("{bad json", encoding="utf-8")
+        sp.load_default_prompt("")
+        assert sp.get_system_prompt() is None
+        assert sp.is_using_preset()
+
+    def test_non_string_prompt_ignored(self):
+        sp._PERSIST_FILE.write_text(json.dumps({"prompt": 123}), encoding="utf-8")
+        sp.load_default_prompt("")
+        assert sp.get_system_prompt() is None
+        assert sp.is_using_preset()
+
+    def test_empty_string_prompt_ignored(self):
+        sp._PERSIST_FILE.write_text(json.dumps({"prompt": "  "}), encoding="utf-8")
+        sp.load_default_prompt("")
+        assert sp.get_system_prompt() is None
+
+    def test_non_dict_json_ignored(self):
+        sp._PERSIST_FILE.write_text("[]", encoding="utf-8")
+        sp.load_default_prompt("")
+        assert sp.get_system_prompt() is None
+        assert sp.is_using_preset()
+
+    def test_write_failure_prevents_memory_update(self):
+        with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            with pytest.raises(OSError, match="disk full"):
+                sp.set_system_prompt("should fail")
+        assert sp.get_system_prompt() is None  # memory unchanged
+
+    def test_delete_failure_prevents_memory_update(self):
+        sp.set_system_prompt("active")
+        with patch.object(Path, "unlink", side_effect=OSError("permission denied")):
+            with pytest.raises(OSError, match="permission denied"):
+                sp.reset_system_prompt()
+        assert sp.get_system_prompt() == "active"  # memory unchanged
