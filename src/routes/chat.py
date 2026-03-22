@@ -1,5 +1,6 @@
 """Chat completions endpoint (/v1/chat/completions)."""
 
+import asyncio
 import json
 import logging
 import os
@@ -306,23 +307,47 @@ async def generate_streaming_response(
             prompt, run_kwargs = _prepare_stateless_completion(request.messages, options)
             chunk_source = backend.run_completion(**run_kwargs, stream=True)
 
-        # Stream chunks using shared SSE logic
+        # Stream chunks via a background task to keep SDK cancel scopes
+        # task-local.  Starlette may close the response generator from a
+        # different ASGI task during teardown; if the SDK generator is still
+        # open at that point its anyio cancel scope would be exited from the
+        # wrong task.  By running the SDK iteration in a dedicated task and
+        # bridging with an asyncio.Queue we avoid the crossing entirely.
+        _SENTINEL = object()
+        sse_queue: asyncio.Queue = asyncio.Queue()
         chunks_buffer = []
+
+        async def _sdk_reader():
+            try:
+                async for sse_line in streaming_utils.stream_chunks(
+                    chunk_source=chunk_source,
+                    request=request,
+                    request_id=request_id,
+                    chunks_buffer=chunks_buffer,
+                    logger=logger,
+                ):
+                    await sse_queue.put(("sse", sse_line))
+            except Exception as exc:
+                await sse_queue.put(("error", exc))
+            finally:
+                await chunk_source.aclose()
+                await sse_queue.put(("done", _SENTINEL))
+
+        reader_task = asyncio.create_task(_sdk_reader())
         try:
-            async for sse_line in streaming_utils.stream_chunks(
-                chunk_source=chunk_source,
-                request=request,
-                request_id=request_id,
-                chunks_buffer=chunks_buffer,
-                logger=logger,
-            ):
-                yield sse_line
+            while True:
+                msg = await sse_queue.get()
+                if msg[0] == "done":
+                    break
+                if msg[0] == "error":
+                    raise msg[1]
+                yield msg[1]  # SSE line
         finally:
-            # Close the SDK generator in the same task that iterated it.
-            # The SDK uses anyio cancel scopes internally; closing from a
-            # different task (e.g. Starlette response teardown) causes
-            # "Attempted to exit cancel scope in a different task".
-            await chunk_source.aclose()
+            reader_task.cancel()
+            try:
+                await reader_task
+            except asyncio.CancelledError:
+                pass
 
         # Capture provider session id (e.g. Codex thread_id) from meta-events
         if session is not None:

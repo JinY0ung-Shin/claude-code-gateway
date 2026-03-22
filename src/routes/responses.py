@@ -1,5 +1,6 @@
 """Responses API endpoint (/v1/responses)."""
 
+import asyncio
 import logging
 import secrets
 import uuid
@@ -272,35 +273,54 @@ async def create_response(
             try:
                 chunks_buffer = []
                 chunk_source = backend.run_completion(**preflight["chunk_kwargs"])
+
+                # Run SDK iteration in a dedicated task to keep anyio cancel
+                # scopes task-local.  Starlette may close the response generator
+                # from a different ASGI task during teardown; bridging with a
+                # queue prevents cancel-scope crossing.
+                _SENTINEL = object()
+                sse_queue: asyncio.Queue = asyncio.Queue()
+
+                async def _sdk_reader():
+                    try:
+                        async for line in streaming_utils.stream_response_chunks(
+                            chunk_source=chunk_source,
+                            model=body.model,
+                            response_id=resp_id,
+                            output_item_id=output_item_id,
+                            chunks_buffer=chunks_buffer,
+                            logger=logger,
+                            prompt_text=prompt,
+                            metadata=body.metadata or {},
+                            stream_result=stream_result,
+                        ):
+                            await sse_queue.put(("sse", line))
+                    except Exception as exc:
+                        await sse_queue.put(("error", exc))
+                    finally:
+                        await chunk_source.aclose()
+                        await sse_queue.put(("done", _SENTINEL))
+
+                reader_task = asyncio.create_task(_sdk_reader())
                 try:
-                    async for line in streaming_utils.stream_response_chunks(
-                        chunk_source=chunk_source,
-                        model=body.model,
-                        response_id=resp_id,
-                        output_item_id=output_item_id,
-                        chunks_buffer=chunks_buffer,
-                        logger=logger,
-                        prompt_text=prompt,
-                        metadata=body.metadata or {},
-                        stream_result=stream_result,
-                    ):
-                        yield line
+                    while True:
+                        msg = await sse_queue.get()
+                        if msg[0] == "done":
+                            break
+                        if msg[0] == "error":
+                            raise msg[1]
+                        yield msg[1]
                 finally:
-                    # Close the SDK generator in the same task that iterated it.
-                    # The SDK uses anyio cancel scopes internally; closing from a
-                    # different task (e.g. Starlette response teardown) causes
-                    # "Attempted to exit cancel scope in a different task".
-                    await chunk_source.aclose()
+                    reader_task.cancel()
+                    try:
+                        await reader_task
+                    except asyncio.CancelledError:
+                        pass
 
                 # ALWAYS capture provider_session_id (even on failure).
-                # On failure, this is internal-only: no response_id is committed for the
-                # client, so the captured thread_id is not externally recoverable.
                 capture_provider_session_id(chunks_buffer, session)
 
                 # SUCCESS-ONLY: commit turn counter and session messages.
-                # Use assistant_text assembled by stream_response_chunks() from
-                # actual deltas sent to the client.  This avoids a parse_message()
-                # mismatch that could emit an error *after* response.completed.
                 if stream_result.get("success"):
                     assistant_text = stream_result.get("assistant_text") or ""
                     if assistant_text:
@@ -313,7 +333,6 @@ async def create_response(
             except Exception as e:
                 logger.error("Responses API Stream: setup error: %s", e, exc_info=True)
                 # Capture provider_session_id from partial chunks on exception.
-                # Internal-only: no response_id is committed, so not client-recoverable.
                 if chunks_buffer:
                     capture_provider_session_id(chunks_buffer, session)
                 failed_resp = ResponseObject(
