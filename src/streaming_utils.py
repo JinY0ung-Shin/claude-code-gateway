@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -6,6 +7,7 @@ from typing import Any, AsyncGenerator, Dict, Optional
 
 from claude_agent_sdk.types import ToolResultBlock, ToolUseBlock
 
+from src.constants import SSE_KEEPALIVE_INTERVAL
 from src.message_adapter import MessageAdapter
 from src.models import ChatCompletionRequest, ChatCompletionStreamResponse, StreamChoice
 from src.response_models import (
@@ -679,6 +681,65 @@ def format_chunk_content(chunk: Dict[str, Any], content_sent: bool) -> Optional[
 
 
 # ---------------------------------------------------------------------------
+# SSE keepalive
+# ---------------------------------------------------------------------------
+
+# SSE comment line — compliant clients silently ignore these.
+_SSE_KEEPALIVE = ": keepalive\n\n"
+
+_SENTINEL = object()
+
+
+async def _keepalive_wrapper(
+    source: AsyncGenerator,
+    interval: int,
+) -> AsyncGenerator:
+    """Wrap *source* to yield ``_SSE_KEEPALIVE`` during idle periods.
+
+    When the underlying async generator produces no item for *interval*
+    seconds, a keepalive SSE comment is yielded instead.  This prevents
+    HTTP intermediaries and client-side read timeouts from killing the
+    connection while the SDK is busy (tool execution, context compaction).
+
+    If *interval* is ``<= 0`` keepalives are disabled and the source is
+    yielded through unchanged.
+
+    The implementation keeps a single pending ``__anext__()`` task alive
+    across timeout cycles so that the upstream generator / stream read is
+    never cancelled by a keepalive timeout.
+    """
+    if interval <= 0:
+        async for item in source:
+            yield item
+        return
+
+    ait = source.__aiter__()
+    next_task: asyncio.Task | None = None
+    try:
+        while True:
+            if next_task is None:
+                next_task = asyncio.ensure_future(ait.__anext__())
+            done, _ = await asyncio.wait({next_task}, timeout=interval)
+            if done:
+                try:
+                    yield next_task.result()
+                except StopAsyncIteration:
+                    break
+                finally:
+                    next_task = None
+            else:
+                # Timeout — upstream task is still pending; emit keepalive
+                yield _SSE_KEEPALIVE
+    finally:
+        if next_task is not None and not next_task.done():
+            next_task.cancel()
+            try:
+                await next_task
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Chat Completions streaming (/v1/chat/completions)
 # ---------------------------------------------------------------------------
 
@@ -708,7 +769,12 @@ async def stream_chunks(
             ]
         return [make_sse(request_id, request.model, {"content": text})]
 
-    async for chunk in chunk_source:
+    async for chunk in _keepalive_wrapper(chunk_source, SSE_KEEPALIVE_INTERVAL):
+        # Keepalive SSE comments — forward directly to the client
+        if chunk is _SSE_KEEPALIVE:
+            yield _SSE_KEEPALIVE
+            continue
+
         # Handle AssistantMessage.error (auth failures, rate limits, etc.)
         if chunk.get("type") == "assistant" and chunk.get("error"):
             chunks_buffer.append(chunk)
@@ -756,16 +822,6 @@ async def stream_chunks(
                 yield make_task_sse(request_id, request.model, tool_block)
             continue
 
-        # Skip duplicate assistant content in token-streaming mode
-        if token_streaming:
-            if chunk.get("type") == "stream_event":
-                continue
-            if chunk.get("type") != "user" and is_assistant_content_chunk(chunk):
-                # Preserve assistant chunks that carry per-turn usage (SDK 0.1.49+)
-                if chunk.get("type") == "assistant" and chunk.get("usage"):
-                    chunks_buffer.append(chunk)
-                continue
-
         # User chunks with tool_result blocks
         if chunk.get("type") == "user":
             tool_results, parent_id = extract_user_tool_results(chunk)
@@ -777,8 +833,11 @@ async def stream_chunks(
             chunks_buffer.append(chunk)
             continue
 
-        # Emit tool_use/tool_result blocks embedded in assistant content
-        # (Codex collab_tool_call → tool blocks arrive here, not via stream_event)
+        # Emit tool_use/tool_result blocks embedded in assistant content.
+        # This MUST run before the token-streaming skip below so that tool
+        # blocks inside assistant content chunks are not silently dropped
+        # when token_streaming is True (which suppresses duplicate text but
+        # must not suppress structured tool events).
         embedded_tools = extract_embedded_tool_blocks(chunk)
         for tb in embedded_tools:
             if tb.get("type") == "tool_use":
@@ -786,6 +845,16 @@ async def stream_chunks(
             elif tb.get("type") == "tool_result":
                 result_data = _normalize_tool_result(tb)
                 yield make_task_sse(request_id, request.model, result_data)
+
+        # Skip duplicate assistant text in token-streaming mode.
+        # Tool blocks were already extracted above, so only text is suppressed.
+        if token_streaming:
+            if chunk.get("type") == "stream_event":
+                continue
+            if chunk.get("type") != "user" and is_assistant_content_chunk(chunk):
+                if chunk.get("type") == "assistant" and chunk.get("usage"):
+                    chunks_buffer.append(chunk)
+                continue
 
         # Content chunks (assistant messages, results)
         chunks_buffer.append(chunk)
@@ -795,10 +864,10 @@ async def stream_chunks(
                 yield sse
             content_sent = True
 
-    # Flush any remaining buffered text from the collab filter
-    remaining = collab_filter.flush()
-    if remaining:
-        for sse in _emit_sse(remaining):
+    # Flush remaining buffered chars from collab filter
+    remaining_collab = collab_filter.flush()
+    if remaining_collab:
+        for sse in _emit_sse(remaining_collab):
             yield sse
         content_sent = True
 
@@ -926,7 +995,12 @@ async def stream_response_chunks(
     # --- Main streaming loop ---
 
     try:
-        async for chunk in chunk_source:
+        async for chunk in _keepalive_wrapper(chunk_source, SSE_KEEPALIVE_INTERVAL):
+            # Keepalive SSE comments — forward directly to the client
+            if chunk is _SSE_KEEPALIVE:
+                yield _SSE_KEEPALIVE
+                continue
+
             # Detect SDK in-band error chunks
             if isinstance(chunk, dict) and chunk.get("is_error"):
                 error_msg = chunk.get("error_message", "Unknown SDK error")
@@ -988,16 +1062,6 @@ async def stream_response_chunks(
                     )
                 continue
 
-            # Skip duplicate assistant content in token-streaming mode
-            if token_streaming:
-                if chunk.get("type") == "stream_event":
-                    continue
-                if chunk.get("type") != "user" and is_assistant_content_chunk(chunk):
-                    # Preserve assistant chunks that carry per-turn usage (SDK 0.1.49+)
-                    if chunk.get("type") == "assistant" and chunk.get("usage"):
-                        chunks_buffer.append(chunk)
-                    continue
-
             # User chunks with tool_result blocks
             if chunk.get("type") == "user":
                 tool_results, parent_id = extract_user_tool_results(chunk)
@@ -1010,8 +1074,10 @@ async def stream_response_chunks(
                 chunks_buffer.append(chunk)
                 continue
 
-            # Emit tool_use/tool_result blocks embedded in assistant content
-            # (Codex collab_tool_call → tool blocks arrive here, not via stream_event)
+            # Emit tool_use/tool_result blocks embedded in assistant content.
+            # This MUST run before the token-streaming skip below so that tool
+            # blocks inside assistant content chunks are not silently dropped
+            # when token_streaming is True.
             embedded_tools = extract_embedded_tool_blocks(chunk)
             for tb in embedded_tools:
                 if tb.get("type") == "tool_use":
@@ -1027,6 +1093,16 @@ async def stream_response_chunks(
                         parent_tool_use_id=tb.get("parent_tool_use_id"),
                     )
 
+            # Skip duplicate assistant text in token-streaming mode.
+            # Tool blocks were already extracted above, so only text is suppressed.
+            if token_streaming:
+                if chunk.get("type") == "stream_event":
+                    continue
+                if chunk.get("type") != "user" and is_assistant_content_chunk(chunk):
+                    if chunk.get("type") == "assistant" and chunk.get("usage"):
+                        chunks_buffer.append(chunk)
+                    continue
+
             # Content chunks (assistant messages, results)
             chunks_buffer.append(chunk)
             text = format_chunk_content(chunk, content_sent)
@@ -1041,11 +1117,11 @@ async def stream_response_chunks(
         yield _make_failed_event("server_error", "Internal server error")
         return
 
-    # Flush any remaining buffered text from the collab filter
-    remaining = collab_filter.flush()
-    if remaining:
-        yield _emit_delta(remaining)
-        full_text.append(remaining)
+    # Flush remaining buffered chars from collab filter
+    remaining_collab = collab_filter.flush()
+    if remaining_collab:
+        yield _emit_delta(remaining_collab)
+        full_text.append(remaining_collab)
         content_sent = True
 
     if tool_acc.has_incomplete:

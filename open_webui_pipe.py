@@ -10,6 +10,7 @@ license: MIT
 
 import asyncio
 import hashlib
+import html
 import json
 import logging
 from typing import AsyncGenerator
@@ -41,8 +42,8 @@ class Pipe:
             description="Claude model to use (e.g. sonnet, opus, haiku)",
         )
         TIMEOUT: int = Field(
-            default=300,
-            description="Request timeout in seconds",
+            default=600,
+            description="Total request timeout in seconds (increase for heavy MCP/search workloads)",
         )
         FALLBACK_TO_CHAT_COMPLETIONS: bool = Field(
             default=False,
@@ -271,7 +272,17 @@ class Pipe:
             list(payload.keys()),
         )
         log.info("[STREAM] previous_response_id=%s", payload.get("previous_response_id"))
-        async with httpx.AsyncClient(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
+        # Use a generous read timeout — the gateway sends SSE keepalive
+        # comments every ~15s during idle periods (tool execution, context
+        # compaction), so a 60s read timeout catches truly dead connections
+        # while not killing active-but-quiet streams.
+        timeout = httpx.Timeout(
+            connect=30.0,
+            read=60.0,
+            write=30.0,
+            pool=float(self.valves.TIMEOUT),
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
                 "POST", self._responses_url(), json=payload, headers=self._make_headers()
             ) as resp:
@@ -335,25 +346,21 @@ class Pipe:
                         name = event.get("name", "")
                         if tool_id:
                             tool_names[tool_id] = name
-                        parent = event.get("parent_tool_use_id")
-                        indent = "> > " if parent else "> "
-                        event_json = json.dumps(event, indent=2, ensure_ascii=False)
-                        quoted_json = ("\n" + indent).join(event_json.split("\n"))
-                        yield f"\n\n{indent}🔧 **{name}**\n{indent}```json\n{indent}{quoted_json}\n{indent}```\n"
 
                     elif event_type == "response.tool_result":
                         tool_id = event.get("tool_use_id", "")
                         is_error = event.get("is_error", False)
-                        parent = event.get("parent_tool_use_id")
                         tool_name = tool_names.get(tool_id, "")
                         prefix = "❌" if is_error else "📎"
-                        label = f"{prefix} **Result**"
                         if tool_name:
-                            label += f" ({tool_name})"
-                        indent = "> > " if parent else "> "
-                        event_json = json.dumps(event, indent=2, ensure_ascii=False)
-                        quoted_json = ("\n" + indent).join(event_json.split("\n"))
-                        yield f"\n{indent}{label}\n{indent}```json\n{indent}{quoted_json}\n{indent}```\n"
+                            label = f"{prefix} {html.escape(tool_name)} — {'Error' if is_error else 'Result'}"
+                        else:
+                            label = f"{prefix} {'Error' if is_error else 'Result'}"
+                        result_text = str(event.get("content", ""))[:500]
+                        yield (
+                            f"\n<details>\n<summary>{label}</summary>\n\n"
+                            f"````\n{result_text}\n````\n\n</details>\n"
+                        )
 
                     elif event_type == "response.completed":
                         completed = True
@@ -366,6 +373,9 @@ class Pipe:
                                 "model": self.valves.MODEL,
                             }
                             log.debug("Chain updated: chat=%s, response_id=%s", chat_id, new_id)
+                        # Flush a trailing newline so the markdown renderer
+                        # finalizes the last HTML block (e.g. </details>)
+                        yield "\n"
 
                     elif event_type in ("response.failed", "error"):
                         error = event.get("response", {}).get("error", {})
