@@ -4,7 +4,7 @@ Session management for chat-session history.
 This module manages in-memory conversation sessions with TTL-based expiry
 and automatic cleanup.  It handles **chat-session message history** only;
 the ``previous_response_id`` chaining used by ``/v1/responses`` is managed
-at the endpoint layer in ``src/main.py``.
+in the ``/v1/responses`` endpoint (``src/routes/responses.py``).
 
 Concurrency model
 -----------------

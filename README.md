@@ -38,7 +38,7 @@ curl http://localhost:8000/v1/chat/completions \
 - **Token-Level Streaming** — Real-time token delivery via SDK partial messages
 - **Rate Limiting** — Per-endpoint configurable limits
 - **Docker Ready** — Dockerfile and docker-compose included
-- **Open WebUI Pipe** — Drop-in integration via `open_webui_pipe.py`
+- **Open WebUI Pipe** — Drop-in integration via `pipes/open_webui_pipe.py`
 
 ## Installation
 
@@ -162,7 +162,7 @@ curl http://localhost:8000/v1/messages \
 
 ### Open WebUI
 
-`open_webui_pipe.py` is included for Open WebUI integration. Configure in the pipe:
+`pipes/open_webui_pipe.py` is included for Open WebUI integration. Configure in the pipe:
 
 - `BASE_URL` — Gateway URL (e.g., `http://localhost:8000`)
 - `API_KEY` — Gateway Bearer token, if enabled
