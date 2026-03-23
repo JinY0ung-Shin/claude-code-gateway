@@ -15,7 +15,7 @@ This repository is a FastAPI gateway for the Claude Agent SDK. It exposes three 
 - `src/constants.py` is the shared home for environment-driven defaults and config constants.
 - `src/models.py` and `src/response_models.py` define request and response schemas.
 - `src/auth.py`, `src/rate_limiter.py`, and `src/mcp_config.py` handle auth, limits, and MCP loading.
-- `open_webui_pipe.py` is a standalone Open WebUI pipe and must stay decoupled from `src/`.
+- `pipes/open_webui_pipe.py` is a standalone Open WebUI pipe and must stay decoupled from `src/`.
 - `tests/` contains unit, API, async, property-based, and shell smoke coverage.
 
 ## Working Rules
@@ -24,7 +24,7 @@ This repository is a FastAPI gateway for the Claude Agent SDK. It exposes three 
 - Keep message-format translation in `src/message_adapter.py`, SDK interaction in `src/claude_cli.py`, and SSE shaping in `src/streaming_utils.py`.
 - Preserve response-shape and streaming semantics across the compatible API surfaces.
 - Put new shared defaults in `src/constants.py`; when config behavior changes, also update `.env.example` and `README.md`.
-- Do not import from `src/` inside `open_webui_pipe.py`; it communicates with the gateway over HTTP only.
+- Do not import from `src/` inside `pipes/open_webui_pipe.py`; it communicates with the gateway over HTTP only.
 - Preserve the distinction between chat-session history in `src/session_manager.py` and `previous_response_id` chaining in `/v1/responses`.
 
 ## Commands
