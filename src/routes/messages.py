@@ -45,8 +45,19 @@ async def anthropic_messages(
     """
     await verify_api_key(request, credentials)
 
-    # Claude-only guard: reject Codex models on Anthropic endpoint
+    # Validate model is recognised by a backend
     resolved = resolve_model(request_body.model)
+    if resolved is None:
+        supported = sorted(BackendRegistry.all_model_ids())
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{request_body.model}' is not supported. "
+                f"Supported models: {supported}"
+            ),
+        )
+
+    # Claude-only guard: reject non-Claude models on Anthropic endpoint
     if resolved.backend != "claude":
         raise HTTPException(
             status_code=400,

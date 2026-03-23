@@ -37,17 +37,16 @@ class ParameterValidator:
 
         Supports slash-delimited patterns like ``codex/o3``: the base prefix
         (before the first ``/``) is checked against the known model list.
-        Unknown models are warned but still allowed for graceful degradation.
+        Returns False for unknown models.
         """
         supported = cls._get_supported_models()
         base_model = model.split("/")[0] if "/" in model else model
         if base_model not in supported:
             logger.warning(
                 f"Model '{model}' is not in the known supported models list. "
-                f"It will still be attempted but may fail. "
                 f"Supported models: {sorted(supported)}"
             )
-            # Return True anyway to allow graceful degradation
+            return False
         return True
 
     @classmethod

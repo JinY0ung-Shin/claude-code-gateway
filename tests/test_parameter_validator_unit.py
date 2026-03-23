@@ -22,11 +22,11 @@ class TestParameterValidatorValidateModel:
         result = ParameterValidator.validate_model(DEFAULT_MODEL)
         assert result is True
 
-    def test_unknown_model_returns_true_with_warning(self):
-        """Unknown model returns True (graceful degradation) with warning logged."""
+    def test_unknown_model_returns_false_with_warning(self):
+        """Unknown model returns False with warning logged."""
         with patch("src.parameter_validator.logger") as mock_logger:
             result = ParameterValidator.validate_model("unknown-model-xyz")
-            assert result is True
+            assert result is False
             mock_logger.warning.assert_called_once()
             assert "unknown-model-xyz" in str(mock_logger.warning.call_args)
 

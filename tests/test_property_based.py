@@ -42,18 +42,21 @@ class TestParameterValidatorProperties:
     def test_valid_model_names_accepted(self, model: str):
         """Valid Claude model names should be accepted."""
         result = ParameterValidator.validate_model(model)
-        # validate_model always returns True (allows graceful degradation)
         assert result is True
 
     @given(model=st.text(min_size=1, max_size=50))
     @settings(max_examples=30)
-    def test_any_model_name_accepted_gracefully(self, model: str):
-        """Any model name is accepted (graceful degradation)."""
+    def test_unknown_model_rejected(self, model: str):
+        """Unknown model names are rejected."""
         assume(model.strip())  # Non-empty
+        supported = ParameterValidator._get_supported_models()
+        base = model.split("/")[0] if "/" in model else model
 
-        # validate_model always returns True to allow trying unknown models
         result = ParameterValidator.validate_model(model)
-        assert result is True
+        if base in supported:
+            assert result is True
+        else:
+            assert result is False
 
 
 class TestTokenEstimation:
