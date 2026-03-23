@@ -7,6 +7,7 @@ as the primary entry points for ``main.py``.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from src.backends.base import (  # noqa: F401
     BackendClient,
@@ -45,11 +46,11 @@ def discover_backends(registry_cls=None) -> None:
         logger.warning("Codex backend not available: %s", e)
 
 
-def resolve_model(model: str) -> ResolvedModel:
+def resolve_model(model: str) -> Optional[ResolvedModel]:
     """Parse a model string into backend + provider model.
 
-    Queries registered descriptors first (so resolution works even if a
-    backend failed to start), then falls back to Claude as the default backend.
+    Queries registered descriptors and returns the first match.
+    Returns ``None`` if no backend recognises the model.
 
     Resolution rules:
     - ``codex``         -> backend="codex", provider_model=<CODEX_DEFAULT_MODEL>
@@ -65,5 +66,4 @@ def resolve_model(model: str) -> ResolvedModel:
         if resolved is not None:
             return resolved
 
-    # Default: Claude backend (handles unknown models gracefully)
-    return ResolvedModel(public_model=model, backend="claude", provider_model=model)
+    return None

@@ -21,9 +21,20 @@ def resolve_and_get_backend(
 ) -> tuple[ResolvedModel, "BackendClient"]:
     """Resolve model -> backend and validate backend availability.
 
-    Raises HTTPException if the backend is not registered (e.g. Codex disabled).
+    Raises HTTPException(400) if the model is not recognised by any backend.
+    Raises HTTPException(400) if the backend is not registered (e.g. Codex disabled).
     """
     resolved = resolve_model(model)
+
+    if resolved is None:
+        supported = sorted(BackendRegistry.all_model_ids())
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{model}' is not supported. "
+                f"Supported models: {supported}"
+            ),
+        )
 
     if not BackendRegistry.is_registered(resolved.backend):
         if resolved.backend == "codex":

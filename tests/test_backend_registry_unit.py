@@ -42,16 +42,14 @@ class TestResolveModel:
         assert r.backend == "codex"
         assert r.provider_model == "gpt-5"
 
-    def test_unknown_model_defaults_to_claude(self):
+    def test_unknown_model_returns_none(self):
         r = resolve_model("some-unknown-model")
-        assert r.backend == "claude"
-        assert r.provider_model == "some-unknown-model"
+        assert r is None
 
-    def test_unknown_slash_model_defaults_to_claude(self):
-        """Unknown prefix/submodel should fall through to Claude with full string."""
+    def test_unknown_slash_model_returns_none(self):
+        """Unknown prefix/submodel should return None."""
         r = resolve_model("future-backend/model-x")
-        assert r.backend == "claude"
-        assert r.provider_model == "future-backend/model-x"
+        assert r is None
 
     def test_resolved_model_is_frozen(self):
         r = resolve_model("sonnet")
