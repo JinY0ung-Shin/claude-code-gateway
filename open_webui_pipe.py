@@ -1,7 +1,7 @@
 """
 title: Claude Code Multi-Turn Pipe
 author: claude-code-openai-wrapper
-version: 0.3.0
+version: 0.4.0
 description: True multi-turn conversations via /v1/responses API with previous_response_id chaining.
     The Claude SDK client on the wrapper server maintains conversation context natively.
     This pipe only tracks the chain link (previous_response_id) per Open WebUI chat.
@@ -13,6 +13,7 @@ import hashlib
 import html
 import json
 import logging
+import time
 from typing import AsyncGenerator
 
 import httpx
@@ -48,6 +49,10 @@ class Pipe:
         FALLBACK_TO_CHAT_COMPLETIONS: bool = Field(
             default=False,
             description="Fall back to /v1/chat/completions on persistent failure",
+        )
+        PRINT_TOOL_ACTIVITY: bool = Field(
+            default=True,
+            description="Show tool use/result details inline. Disable for cleaner output.",
         )
 
     def __init__(self):
@@ -298,12 +303,22 @@ class Pipe:
 
                 completed = False
                 line_count = 0
+                last_yield_time = time.monotonic()
                 # Track tool_use_id -> name for result display
                 tool_names: dict[str, str] = {}
+                show_tools = self.valves.PRINT_TOOL_ACTIVITY
                 async for line in resp.aiter_lines():
                     line_count += 1
                     if line_count <= 5 or line.startswith("data: ") and "completed" in line:
                         log.info("[STREAM] Line %d: %s", line_count, line[:200])
+
+                    # Keepalive: if we haven't yielded anything visible in
+                    # 15 seconds, emit a zero-width space so Open WebUI
+                    # doesn't consider the stream dead.
+                    now = time.monotonic()
+                    if now - last_yield_time > 15:
+                        yield "\u200b"
+                        last_yield_time = now
 
                     if not line.startswith("data: "):
                         continue
@@ -319,27 +334,32 @@ class Pipe:
                         delta = event.get("delta", "")
                         if delta:
                             yield delta
+                            last_yield_time = time.monotonic()
 
                     elif event_type == "response.task_started":
                         desc = event.get("description", "")
-                        if desc:
+                        if desc and show_tools:
                             yield f"\n\n> ⏳ **Task**: {desc}\n"
+                            last_yield_time = time.monotonic()
 
                     elif event_type == "response.task_progress":
-                        desc = event.get("description", "")
-                        tool = event.get("last_tool_name", "")
-                        usage = event.get("usage") or {}
-                        uses = usage.get("tool_uses", 0)
-                        text = f"\n> 🔄 **Progress**: {desc}"
-                        if tool:
-                            text += f" ({tool}, {uses}회)"
-                        yield text + "\n"
+                        if show_tools:
+                            desc = event.get("description", "")
+                            tool = event.get("last_tool_name", "")
+                            usage = event.get("usage") or {}
+                            uses = usage.get("tool_uses", 0)
+                            text = f"\n> 🔄 **Progress**: {desc}"
+                            if tool:
+                                text += f" ({tool}, {uses}회)"
+                            yield text + "\n"
+                            last_yield_time = time.monotonic()
 
                     elif event_type == "response.task_notification":
                         status = event.get("status", "")
                         summary = event.get("summary", "")
-                        if summary:
+                        if summary and show_tools:
                             yield f"\n> ✅ **Task {status}**: {summary}\n\n"
+                            last_yield_time = time.monotonic()
 
                     elif event_type == "response.tool_use":
                         tool_id = event.get("tool_use_id", "")
@@ -348,19 +368,24 @@ class Pipe:
                             tool_names[tool_id] = name
 
                     elif event_type == "response.tool_result":
-                        tool_id = event.get("tool_use_id", "")
-                        is_error = event.get("is_error", False)
-                        tool_name = tool_names.get(tool_id, "")
-                        prefix = "❌" if is_error else "📎"
-                        if tool_name:
-                            label = f"{prefix} {html.escape(tool_name)} — {'Error' if is_error else 'Result'}"
-                        else:
-                            label = f"{prefix} {'Error' if is_error else 'Result'}"
-                        result_text = str(event.get("content", ""))[:500]
-                        yield (
-                            f"\n<details>\n<summary>{label}</summary>\n\n"
-                            f"````\n{result_text}\n````\n\n</details>\n"
-                        )
+                        if show_tools:
+                            tool_id = event.get("tool_use_id", "")
+                            is_error = event.get("is_error", False)
+                            tool_name = tool_names.get(tool_id, "")
+                            prefix = "❌" if is_error else "📎"
+                            if tool_name:
+                                label = (
+                                    f"{prefix} {html.escape(tool_name)}"
+                                    f" — {'Error' if is_error else 'Result'}"
+                                )
+                            else:
+                                label = f"{prefix} {'Error' if is_error else 'Result'}"
+                            result_text = str(event.get("content", ""))[:500]
+                            yield (
+                                f"\n<details>\n<summary>{label}</summary>\n\n"
+                                f"````\n{result_text}\n````\n\n</details>\n"
+                            )
+                            last_yield_time = time.monotonic()
 
                     elif event_type == "response.completed":
                         completed = True
