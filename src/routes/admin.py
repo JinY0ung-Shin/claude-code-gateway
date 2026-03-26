@@ -510,6 +510,21 @@ async def delete_skill_endpoint(name: str, _=Depends(require_admin)):
 # ---------------------------------------------------------------------------
 
 
+@router.get("/api/system-prompt/templates")
+async def list_prompt_templates(_=Depends(require_admin)):
+    """List available system prompt template files from docs/."""
+    import re as _re
+    from pathlib import Path as _Path
+
+    docs_dir = _Path(__file__).resolve().parent.parent.parent / "docs"
+    templates = []
+    for f in sorted(docs_dir.glob("*system-prompt*.md")):
+        raw = f.read_text(encoding="utf-8")
+        body = _re.sub(r"\A#[^\n]*\n+(?:>[^\n]*\n)*\n*---\n*", "", raw).strip()
+        templates.append({"name": f.stem, "filename": f.name, "content": body})
+    return {"templates": templates}
+
+
 @router.get("/api/system-prompt")
 async def get_system_prompt_endpoint(_=Depends(require_admin)):
     """Return the current system prompt and its mode."""

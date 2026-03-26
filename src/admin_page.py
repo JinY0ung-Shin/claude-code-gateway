@@ -638,6 +638,16 @@ table td, table th { padding: 8px 12px; border-bottom: 1px solid var(--border); 
           <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.75rem">
             Custom system prompt replaces the <code>claude_code</code> preset. Changes only affect <strong>new sessions</strong>.
           </p>
+          <div style="margin-bottom:0.75rem; display:flex; gap:0.5rem; align-items:center">
+            <label style="font-size:0.8rem; color:var(--text-muted)">Load template:</label>
+            <select @change="if($event.target.value) { applyPromptTemplate($event.target.value); $event.target.value=''; }"
+              style="font-size:0.8rem; padding:4px 8px; background:var(--bg-card); color:var(--text); border:1px solid var(--border); border-radius:4px">
+              <option value="">Select a template...</option>
+              <template x-for="t in promptTemplates" :key="t.name">
+                <option :value="t.name" x-text="t.name"></option>
+              </template>
+            </select>
+          </div>
           <!-- Preset view: read-only display with customize button -->
           <template x-if="systemPrompt.mode === 'preset' && !systemPromptEditing && systemPrompt.preset_text">
             <div>
@@ -827,6 +837,7 @@ function adminApp() {
     systemPrompt: { mode: 'preset', prompt: null, resolved_prompt: null, preset_text: null, char_count: 0 },
     systemPromptText: '',
     systemPromptEditing: false,
+    promptTemplates: [],
 
     async init() {
       // Check if already authenticated (cookie-based)
@@ -1057,6 +1068,16 @@ function adminApp() {
           this.systemPromptEditing = false;
         }
       } catch(e) {}
+      try {
+        const r = await this.api('/admin/api/system-prompt/templates');
+        if (r.ok) { this.promptTemplates = (await r.json()).templates || []; }
+      } catch(e) {}
+    },
+    applyPromptTemplate(name) {
+      const t = this.promptTemplates.find(x => x.name === name);
+      if (!t) return;
+      this.systemPromptText = t.content;
+      this.systemPromptEditing = true;
     },
     async saveSystemPrompt() {
       const text = this.systemPromptText.trim();
