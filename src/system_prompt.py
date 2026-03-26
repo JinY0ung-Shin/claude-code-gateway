@@ -12,6 +12,8 @@ directory so it survives server restarts.
 
 import json
 import logging
+import os
+import platform
 import re
 from pathlib import Path
 from threading import Lock
@@ -65,10 +67,28 @@ def _save_persisted(text: Optional[str]) -> None:
         logger.info("System prompt: persisted to %s", _PERSIST_FILE)
 
 
+def _resolve_placeholders(text: str) -> str:
+    """Replace ``{{PLACEHOLDER}}`` tokens with runtime values."""
+    from src.constants import PROMPT_LANGUAGE, PROMPT_MEMORY_PATH
+
+    replacements = {
+        "LANGUAGE": PROMPT_LANGUAGE,
+        "WORKING_DIRECTORY": os.getenv("CLAUDE_CWD", os.getcwd()),
+        "PLATFORM": platform.system().lower(),
+        "SHELL": os.environ.get("SHELL", ""),
+        "OS_VERSION": platform.platform(),
+        "MEMORY_PATH": PROMPT_MEMORY_PATH,
+    }
+    for key, value in replacements.items():
+        text = text.replace("{{" + key + "}}", value)
+    return text
+
+
 def load_default_prompt(file_path: str = "") -> None:
     """Load the default system prompt from *file_path*.
 
     Also restores any previously persisted admin override.
+    Placeholders like ``{{LANGUAGE}}`` are resolved at load time.
 
     * If *file_path* is empty/blank, preset mode is used (no custom prompt).
     * If the file does not exist, ``FileNotFoundError`` is raised (fail-fast).
@@ -88,15 +108,16 @@ def load_default_prompt(file_path: str = "") -> None:
             _default_prompt = None
             logger.warning("System prompt file is empty, falling back to preset mode")
         else:
-            _default_prompt = content
-            logger.info("System prompt: loaded from file (%d chars)", len(content))
+            _default_prompt = _resolve_placeholders(content)
+            logger.info("System prompt: loaded from file (%d chars)", len(_default_prompt))
 
     # Restore persisted admin override
     persisted = _load_persisted()
     if persisted:
+        resolved = _resolve_placeholders(persisted)
         with _lock:
-            _runtime_prompt = persisted
-        logger.info("System prompt: restored persisted override (%d chars)", len(persisted))
+            _runtime_prompt = resolved
+        logger.info("System prompt: restored persisted override (%d chars)", len(resolved))
 
 
 def get_system_prompt() -> Optional[str]:
@@ -126,8 +147,9 @@ def set_system_prompt(text: str) -> None:
     if not stripped:
         raise ValueError("System prompt cannot be empty. Use reset to revert to default.")
     _save_persisted(stripped)
+    resolved = _resolve_placeholders(stripped)
     with _lock:
-        _runtime_prompt = stripped
+        _runtime_prompt = resolved
     logger.info("System prompt: runtime override set (%d chars)", len(stripped))
 
 
