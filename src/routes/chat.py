@@ -30,7 +30,6 @@ from src.routes.deps import (
     validate_backend_auth_or_raise as _validate_backend_auth,
     validate_image_request as _validate_image_request,
     request_has_images as _request_has_images,
-    capture_provider_session_id as _capture_provider_session_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,10 +139,10 @@ async def _streaming_session_preflight(
 ) -> Dict[str, Any]:
     """Run session guards and mutation BEFORE StreamingResponse is created.
 
-    This ensures HTTPException (400 backend mismatch, 409 Codex resume guard)
-    is raised while the endpoint can still return a proper HTTP error status,
-    rather than inside the async generator where Starlette has already committed
-    the 200 status line.
+    This ensures HTTPException (400 backend mismatch) is raised while the
+    endpoint can still return a proper HTTP error status, rather than inside
+    the async generator where Starlette has already committed the 200 status
+    line.
 
     Returns a dict with keys needed by the streaming generator:
         session, lock_acquired, prompt, sys_prompt, is_new, resume_id, chunk_kwargs
@@ -294,10 +293,6 @@ async def generate_streaming_response(
             except (asyncio.CancelledError, RuntimeError):
                 pass
 
-        # Capture provider session id (e.g. Codex thread_id) from meta-events
-        if session is not None:
-            _capture_provider_session_id(chunks_buffer, session)
-
         # Extract assistant response from all chunks
         assistant_content = None
         if chunks_buffer:
@@ -339,10 +334,6 @@ async def generate_streaming_response(
         raise  # Let FastAPI handle these
     except Exception as e:
         logger.error(f"Streaming error: {e}")
-        # Capture provider_session_id from partial chunks on mid-stream failure
-        # so the Codex thread_id is not lost for future resume attempts.
-        if session is not None and chunks_buffer:
-            _capture_provider_session_id(chunks_buffer, session)
         error_chunk = {"error": {"message": str(e), "type": "streaming_error"}}
         yield f"data: {json.dumps(error_chunk)}\n\n"
     finally:
@@ -380,7 +371,7 @@ async def chat_completions(
 
         if request_body.stream:
             # Run session preflight BEFORE creating StreamingResponse so that
-            # HTTPExceptions (400 backend mismatch, 409 Codex guard) surface
+            # HTTPExceptions (400 backend mismatch) surface
             # as proper HTTP error status codes instead of being swallowed
             # inside the async generator after the 200 status line is committed.
             preflight = None
@@ -432,10 +423,6 @@ async def chat_completions(
                         stream=False,
                     ):
                         chunks.append(chunk)
-
-                    # Capture provider session id + store assistant response
-                    # inside lock to prevent stale reads between requests
-                    _capture_provider_session_id(chunks, session)
 
                     raw_assistant_content = backend.parse_message(chunks)
                     if raw_assistant_content:

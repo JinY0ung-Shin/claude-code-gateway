@@ -230,9 +230,7 @@ The `/v1/responses` endpoint intentionally deviates from the OpenAI Responses AP
 |----------|-------------|------------|
 | `instructions` + `previous_response_id` | Returns **400** — system prompt cannot change mid-session | Allowed (prior instructions don't carry over) |
 | Stale `previous_response_id` | Returns **409** with the latest valid response ID for client recovery | May allow branching from earlier IDs |
-| Backend mismatch in session | Returns **400** — mixing Claude/Codex models within a session is not supported | N/A |
-| Codex resume without thread_id | Returns **409** — previous turn must have returned a thread_id to continue | N/A |
-| Failure-path `provider_session_id` | Captured internally but not externally recoverable — no `response_id` is committed on failed turns | N/A |
+| Backend mismatch in session | Returns **400** — mixing backends within a session is not supported | N/A |
 
 **Stale ID recovery:** When a `409` is returned for a stale `previous_response_id`, the error message includes the current latest response ID (e.g., `resp_{session_id}_{turn}`), allowing clients to retry with the correct value.
 

@@ -158,7 +158,7 @@ def _filter_tool_blocks(content):
 def strip_collab_json(text: str) -> str:
     """Remove collab_tool_call JSON blocks from text content.
 
-    Uses a string-aware brace counter identical to the one in codex_cli so
+    Uses a string-aware brace counter so
     that braces inside JSON string values are not misinterpreted.
     """
     plain_parts: list[str] = []
@@ -516,11 +516,8 @@ def is_assistant_content_chunk(chunk: Dict[str, Any]) -> bool:
 def extract_embedded_tool_blocks(chunk: Dict[str, Any]) -> list:
     """Extract tool_use/tool_result blocks embedded in assistant content.
 
-    Codex yields ``{"type": "assistant", "content": [...]}`` with tool_use
-    and tool_result dicts inline (from collab_tool_call conversion).  Claude's
-    SDK sends these as separate stream_event / user chunks.  This function
-    lets the streaming loop emit them as structured SSE events regardless
-    of which backend produced them.
+    Extract tool_use/tool_result blocks embedded in assistant content arrays.
+    This function lets the streaming loop emit them as structured SSE events.
 
     Returns a (possibly empty) list of tool block dicts.
     """

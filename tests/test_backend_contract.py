@@ -8,12 +8,10 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from src.backends.base import (
-    BackendConfigError,
     BackendRegistry,
     ResolvedModel,
 )
 from src.backends.claude import CLAUDE_DESCRIPTOR, ClaudeCodeCLI
-from src.backends.codex import CODEX_DESCRIPTOR
 
 
 # ---------------------------------------------------------------------------
@@ -45,22 +43,6 @@ def mock_claude_cli():
                 yield cli
 
 
-@pytest.fixture
-def mock_codex_cli(tmp_path):
-    """Create a CodexCLI with a mocked binary."""
-    # Create a fake binary
-    fake_bin = tmp_path / "codex"
-    fake_bin.write_text("#!/bin/sh\necho test")
-    fake_bin.chmod(0o755)
-
-    with patch.dict("os.environ", {"CODEX_CLI_PATH": str(fake_bin)}):
-        # Reimport to pick up patched env
-        from src.backends.codex.client import CodexCLI as _CodexCLI
-
-        cli = _CodexCLI(timeout=1000, cwd=str(tmp_path))
-        yield cli
-
-
 # ---------------------------------------------------------------------------
 # Descriptor tests
 # ---------------------------------------------------------------------------
@@ -69,18 +51,11 @@ def mock_codex_cli(tmp_path):
 class TestDescriptors:
     """Test that descriptors are correctly defined."""
 
-    @pytest.mark.parametrize(
-        "descriptor,expected_name,expected_owned_by",
-        [
-            (CLAUDE_DESCRIPTOR, "claude", "anthropic"),
-            (CODEX_DESCRIPTOR, "codex", "openai"),
-        ],
-    )
-    def test_descriptor_fields(self, descriptor, expected_name, expected_owned_by):
-        assert descriptor.name == expected_name
-        assert descriptor.owned_by == expected_owned_by
-        assert len(descriptor.models) > 0
-        assert descriptor.resolve_fn is not None
+    def test_claude_descriptor_fields(self):
+        assert CLAUDE_DESCRIPTOR.name == "claude"
+        assert CLAUDE_DESCRIPTOR.owned_by == "anthropic"
+        assert len(CLAUDE_DESCRIPTOR.models) > 0
+        assert CLAUDE_DESCRIPTOR.resolve_fn is not None
 
     def test_claude_descriptor_resolves_known_models(self):
         for model in CLAUDE_DESCRIPTOR.models:
@@ -88,27 +63,14 @@ class TestDescriptors:
             assert resolved is not None
             assert resolved.backend == "claude"
 
-    def test_codex_descriptor_resolves_known_models(self):
-        for model in CODEX_DESCRIPTOR.models:
-            resolved = CODEX_DESCRIPTOR.resolve_fn(model)
-            assert resolved is not None
-            assert resolved.backend == "codex"
-
     def test_claude_descriptor_slash_syntax(self):
         resolved = CLAUDE_DESCRIPTOR.resolve_fn("claude/opus")
         assert resolved is not None
         assert resolved.backend == "claude"
         assert resolved.provider_model == "opus"
 
-    def test_codex_descriptor_slash_syntax(self):
-        resolved = CODEX_DESCRIPTOR.resolve_fn("codex/o3")
-        assert resolved is not None
-        assert resolved.backend == "codex"
-        assert resolved.provider_model == "o3"
-
     def test_descriptor_returns_none_for_unknown(self):
-        assert CLAUDE_DESCRIPTOR.resolve_fn("codex") is None
-        assert CODEX_DESCRIPTOR.resolve_fn("opus") is None
+        assert CLAUDE_DESCRIPTOR.resolve_fn("unknown-model") is None
 
 
 # ---------------------------------------------------------------------------
@@ -125,11 +87,9 @@ class TestRegistryDescriptors:
 
     def test_all_model_ids(self):
         BackendRegistry.register_descriptor(CLAUDE_DESCRIPTOR)
-        BackendRegistry.register_descriptor(CODEX_DESCRIPTOR)
         ids = BackendRegistry.all_model_ids()
         assert "opus" in ids
         assert "sonnet" in ids
-        assert "codex" in ids
 
     def test_get_known_but_not_available(self):
         """A descriptor is registered but no live client — get() should raise with helpful message."""
@@ -178,32 +138,7 @@ class TestProtocolConformance:
         assert resolved.provider_model == "opus"
 
     def test_claude_resolve_unknown_returns_none(self, mock_claude_cli):
-        assert mock_claude_cli.resolve("codex") is None
-
-    def test_codex_has_name_property(self, mock_codex_cli):
-        assert mock_codex_cli.name == "codex"
-
-    def test_codex_has_owned_by_property(self, mock_codex_cli):
-        assert mock_codex_cli.owned_by == "openai"
-
-    def test_codex_supported_models(self, mock_codex_cli):
-        models = mock_codex_cli.supported_models()
-        assert isinstance(models, list)
-        assert "codex" in models
-
-    def test_codex_resolve_known_model(self, mock_codex_cli):
-        resolved = mock_codex_cli.resolve("codex")
-        assert resolved is not None
-        assert resolved.backend == "codex"
-
-    def test_codex_resolve_slash_model(self, mock_codex_cli):
-        resolved = mock_codex_cli.resolve("codex/o3")
-        assert resolved is not None
-        assert resolved.backend == "codex"
-        assert resolved.provider_model == "o3"
-
-    def test_codex_resolve_unknown_returns_none(self, mock_codex_cli):
-        assert mock_codex_cli.resolve("opus") is None
+        assert mock_claude_cli.resolve("unknown-model") is None
 
 
 # ---------------------------------------------------------------------------
@@ -262,18 +197,6 @@ class TestBuildOptions:
             assert "allowed_tools" not in options
             assert "mcp_servers" in options
 
-    def test_codex_build_options_tools_enabled(self, mock_codex_cli):
-        req = self._make_request(enable_tools=True, model="codex")
-        resolved = ResolvedModel(public_model="codex", backend="codex", provider_model="gpt-5.4")
-        options = mock_codex_cli.build_options(req, resolved)
-        assert options["permission_mode"] == "bypassPermissions"
-
-    def test_codex_build_options_tools_disabled_raises(self, mock_codex_cli):
-        req = self._make_request(enable_tools=False, model="codex")
-        resolved = ResolvedModel(public_model="codex", backend="codex", provider_model="gpt-5.4")
-        with pytest.raises(BackendConfigError, match="does not support disabling tools"):
-            mock_codex_cli.build_options(req, resolved)
-
 
 # ---------------------------------------------------------------------------
 # get_auth_provider tests
@@ -286,10 +209,6 @@ class TestGetAuthProvider:
     def test_claude_auth_provider(self, mock_claude_cli):
         provider = mock_claude_cli.get_auth_provider()
         assert provider.name == "claude"
-
-    def test_codex_auth_provider(self, mock_codex_cli):
-        provider = mock_codex_cli.get_auth_provider()
-        assert provider.name == "codex"
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +231,6 @@ class TestCleanImports:
 
         mod = importlib.import_module("src.constants")
         assert hasattr(mod, "CLAUDE_MODELS")
-        assert hasattr(mod, "CODEX_MODELS")
         assert hasattr(mod, "ALL_MODELS")
 
     def test_import_claude_cli_shim(self):
@@ -321,14 +239,6 @@ class TestCleanImports:
 
         mod = importlib.import_module("src.claude_cli")
         assert hasattr(mod, "ClaudeCodeCLI")
-
-    def test_import_codex_cli_shim(self):
-        """src.codex_cli shim must provide CodexCLI and helper functions."""
-        import importlib
-
-        mod = importlib.import_module("src.codex_cli")
-        assert hasattr(mod, "CodexCLI")
-        assert hasattr(mod, "normalize_codex_event")
 
     def test_import_backend_registry_shim(self):
         """src.backend_registry shim must provide BackendClient and BackendRegistry."""
@@ -340,12 +250,11 @@ class TestCleanImports:
         assert hasattr(mod, "resolve_model")
 
     def test_import_auth_providers_from_auth(self):
-        """src.auth must re-export ClaudeAuthProvider and CodexAuthProvider."""
+        """src.auth must re-export ClaudeAuthProvider."""
         import importlib
 
         mod = importlib.import_module("src.auth")
         assert hasattr(mod, "ClaudeAuthProvider")
-        assert hasattr(mod, "CodexAuthProvider")
 
     def test_claude_cli_shim_constants(self):
         """src.claude_cli shim must re-export Claude-specific constants."""
@@ -354,14 +263,6 @@ class TestCleanImports:
         mod = importlib.import_module("src.claude_cli")
         assert hasattr(mod, "THINKING_MODE")
         assert hasattr(mod, "TOKEN_STREAMING")
-
-    def test_codex_cli_shim_constants(self):
-        """src.codex_cli shim must re-export Codex-specific constants."""
-        import importlib
-
-        mod = importlib.import_module("src.codex_cli")
-        assert hasattr(mod, "CODEX_CLI_PATH")
-        assert hasattr(mod, "CODEX_TIMEOUT_MS")
 
 
 # ---------------------------------------------------------------------------
@@ -379,17 +280,13 @@ class TestCleanProcessImports:
         [
             "import src.constants",
             "import src.claude_cli",
-            "import src.codex_cli",
             "import src.backend_registry",
             "import src.auth",
-            "from src.constants import CLAUDE_MODELS, CODEX_MODELS, ALL_MODELS",
+            "from src.constants import CLAUDE_MODELS, ALL_MODELS",
             "from src.claude_cli import ClaudeCodeCLI",
             "from src.claude_cli import THINKING_MODE",
-            "from src.codex_cli import CodexCLI",
-            "from src.codex_cli import CODEX_CLI_PATH",
-            "from src.codex_cli import normalize_codex_event",
             "from src.backend_registry import BackendClient, BackendRegistry, resolve_model",
-            "from src.auth import ClaudeAuthProvider, CodexAuthProvider",
+            "from src.auth import ClaudeAuthProvider",
             "from src.auth import BackendAuthProvider",
         ],
     )

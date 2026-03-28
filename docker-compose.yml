@@ -78,13 +78,6 @@ services:
       # ── Subagent Control ─────────────────────────────────────────────
       # - DISALLOWED_SUBAGENT_TYPES=statusline-setup
 
-      # ── Codex Backend (optional) ─────────────────────────────────────
-      # - OPENAI_API_KEY=sk-...
-      # - CODEX_DEFAULT_MODEL=gpt-5.4
-      # - CODEX_CLI_PATH=codex
-      # - CODEX_TIMEOUT_MS=600000
-      # - CODEX_CONFIG_ISOLATION=false
-
       # ── Debugging ────────────────────────────────────────────────────
       # - DEBUG_MODE=false
       # - VERBOSE=false

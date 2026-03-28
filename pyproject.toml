@@ -1,7 +1,7 @@
 [project]
 name = "claude-code-gateway"
 version = "2.2.0"
-description = "Multi-backend API gateway for Claude Code and Codex"
+description = "API gateway for Claude Code"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -45,7 +45,6 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "integration: Integration tests (real subprocess with mock binary)",
-    "codex_binary: Requires real Codex CLI (opt-in: RUN_CODEX_BINARY_TESTS=1)",
     "slow: Tests taking more than 5 seconds",
 ]
 

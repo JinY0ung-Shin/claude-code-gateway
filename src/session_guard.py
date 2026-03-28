@@ -1,8 +1,8 @@
 """Shared session validation and state mutation for chat and responses endpoints.
 
 Extracts the duplicated session-guard logic (lock acquisition, backend
-mismatch check, Codex resume guard, first-turn tagging) into a single
-implementation so that fixes apply uniformly.
+mismatch check, first-turn tagging) into a single implementation so that
+fixes apply uniformly.
 """
 
 from __future__ import annotations
@@ -65,8 +65,8 @@ async def acquire_session_preflight(
     Raises
     ------
     HTTPException
-        400 for backend mismatch, 409 for Codex resume guard or stale turn,
-        404 for future turn.  The lock is always released before raising.
+        400 for backend mismatch, 409 for stale turn, 404 for future turn.
+        The lock is always released before raising.
     """
     await session.lock.acquire()
 
@@ -100,17 +100,6 @@ async def acquire_session_preflight(
                     f"Session '{session_id}' belongs to backend '{session.backend}', "
                     f"but model '{resolved.public_model}' resolves to '{resolved.backend}'. "
                     f"Cannot mix backends within a session."
-                ),
-            )
-
-        # --- Codex resume guard ---
-        if not is_new and resolved.backend == "codex" and not session.provider_session_id:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Cannot resume Codex session '{session_id}': "
-                    f"the previous turn did not return a thread_id. "
-                    f"Start a new session instead."
                 ),
             )
 

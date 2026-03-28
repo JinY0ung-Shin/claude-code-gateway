@@ -31,7 +31,6 @@ from src.routes.deps import (
     resolve_and_get_backend,
     validate_backend_auth_or_raise,
     validate_image_request,
-    capture_provider_session_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,9 +77,9 @@ async def _responses_streaming_preflight(
 ) -> Dict[str, Any]:
     """Run session guards BEFORE StreamingResponse is created for /v1/responses.
 
-    Acquires ``session.lock`` and validates stale-ID, backend mismatch, and
-    Codex resume guard inside the lock.  On validation failure the lock is
-    released and an HTTPException is raised (proper HTTP status).
+    Acquires ``session.lock`` and validates stale-ID and backend mismatch
+    inside the lock.  On validation failure the lock is released and an
+    HTTPException is raised (proper HTTP status).
 
     Returns a dict consumed by the streaming generator.  The generator's
     ``finally`` block is responsible for releasing the lock.
@@ -129,7 +128,7 @@ async def create_response(
     """OpenAI Responses API compatible endpoint with backend dispatch.
 
     Supports conversation chaining via previous_response_id.
-    Routes to Claude or Codex backend based on the model field.
+    Routes to the appropriate backend based on the model field.
     """
     await verify_api_key(request, credentials)
 
@@ -272,9 +271,6 @@ async def create_response(
                     except (asyncio.CancelledError, RuntimeError):
                         pass
 
-                # ALWAYS capture provider_session_id (even on failure).
-                capture_provider_session_id(chunks_buffer, session)
-
                 # SUCCESS-ONLY: commit turn counter and session messages.
                 if stream_result.get("success"):
                     assistant_text = stream_result.get("assistant_text") or ""
@@ -287,9 +283,6 @@ async def create_response(
 
             except Exception as e:
                 logger.error("Responses API Stream: setup error: %s", e, exc_info=True)
-                # Capture provider_session_id from partial chunks on exception.
-                if chunks_buffer:
-                    capture_provider_session_id(chunks_buffer, session)
                 failed_resp = ResponseObject(
                     id=resp_id,
                     model=body.model,
@@ -326,23 +319,18 @@ async def create_response(
         ) as pf:
             # Execute backend
             chunks = []
-            try:
-                async for chunk in backend.run_completion(
-                    prompt=prompt,
-                    model=resolved.provider_model,
-                    system_prompt=system_prompt if pf.is_new else None,
-                    _custom_base=session.base_system_prompt,
-                    _metadata=body.metadata,
-                    permission_mode=PERMISSION_MODE_BYPASS,
-                    mcp_servers=get_mcp_servers() if resolved.backend == "claude" else None,
-                    session_id=session_id if pf.is_new else None,
-                    resume=pf.resume_id,
-                ):
-                    chunks.append(chunk)
-            finally:
-                # ALWAYS capture provider_session_id (even on failure/exception).
-                if chunks:
-                    capture_provider_session_id(chunks, session)
+            async for chunk in backend.run_completion(
+                prompt=prompt,
+                model=resolved.provider_model,
+                system_prompt=system_prompt if pf.is_new else None,
+                _custom_base=session.base_system_prompt,
+                _metadata=body.metadata,
+                permission_mode=PERMISSION_MODE_BYPASS,
+                mcp_servers=get_mcp_servers() if resolved.backend == "claude" else None,
+                session_id=session_id if pf.is_new else None,
+                resume=pf.resume_id,
+            ):
+                chunks.append(chunk)
 
             # Check for backend errors (run_completion wraps exceptions as error chunks)
             for chunk in chunks:

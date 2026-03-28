@@ -497,7 +497,7 @@ async def get_backends_health() -> List[Dict[str, Any]]:
     from src.auth import auth_manager
 
     descriptors = BackendRegistry.all_descriptors()
-    backend_names = sorted(set(descriptors.keys()) | {"claude", "codex"})
+    backend_names = sorted(set(descriptors.keys()) | {"claude"})
 
     results: List[Dict[str, Any]] = []
     for name in backend_names:

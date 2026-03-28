@@ -41,7 +41,7 @@ async def anthropic_messages(
 
     This endpoint provides compatibility with the native Anthropic SDK,
     allowing tools like VC to use this wrapper via the VC_API_BASE setting.
-    Codex models are not supported on this endpoint.
+    Only Claude models are supported on this endpoint.
     """
     await verify_api_key(request, credentials)
 

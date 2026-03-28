@@ -24,7 +24,6 @@ This document describes all SSE (Server-Sent Events) emitted by the gateway duri
   - [Closing Events](#ra-closing)
 - [Tool Names](#tool-names)
   - [Claude Backend Tools](#claude-tools)
-  - [Codex Backend Tools](#codex-tools)
   - [MCP Tools](#mcp-tools)
 - [Tool Input Schemas](#tool-input-schemas)
 - [Subagent (Nested) Tool Calls](#subagent-tool-calls)
@@ -337,7 +336,7 @@ On failure: `response.failed`
 
 ## Tool Names
 
-Tool names come directly from the Claude Agent SDK or Codex backend. The `name` field in `tool_use` events will be one of the following.
+Tool names come directly from the Claude Agent SDK. The `name` field in `tool_use` events will be one of the following.
 
 ### Claude Backend Tools
 
@@ -357,14 +356,6 @@ These are the built-in tools available to the Claude agent:
 | `NotebookEdit` | Edit Jupyter notebook cells | `notebook_path`, `cell_number`, `new_source` |
 | `TodoRead` | Read the task list | _(no params)_ |
 | `TodoWrite` | Update the task list | `todos` |
-
-### Codex Backend Tools
-
-When using the Codex backend, tool names follow the same conventions. Codex may also produce:
-
-| Name | Description | Key Input Fields |
-|------|-------------|------------------|
-| `Agent` | Codex subagent (with `codex_agent_*` ID prefix) | `prompt` |
 
 ### MCP Tools
 

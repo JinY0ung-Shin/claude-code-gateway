@@ -21,29 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 def discover_backends(registry_cls=None) -> None:
-    """Discover and register all known backends.
-
-    Always registers Claude.  Registers Codex with try/except for graceful
-    failure (binary may not be installed).
-    """
+    """Discover and register all known backends."""
     if registry_cls is None:
         registry_cls = BackendRegistry
 
-    # Claude — always registered
     from src.backends.claude import register as register_claude
 
     register_claude(registry_cls=registry_cls)
-
-    # Codex — graceful failure
-    try:
-        from src.backends.codex import register as register_codex
-
-        register_codex(registry_cls=registry_cls)
-    except Exception as e:
-        # Descriptor may already be registered by register_codex before the
-        # client creation failed — that's intentional so model resolution
-        # can report "known but not available".
-        logger.warning("Codex backend not available: %s", e)
 
 
 def resolve_model(model: str) -> Optional[ResolvedModel]:
@@ -53,9 +37,6 @@ def resolve_model(model: str) -> Optional[ResolvedModel]:
     Returns ``None`` if no backend recognises the model.
 
     Resolution rules:
-    - ``codex``         -> backend="codex", provider_model=<CODEX_DEFAULT_MODEL>
-    - ``codex/o3``      -> backend="codex", provider_model="o3"
-    - ``codex/o4-mini`` -> backend="codex", provider_model="o4-mini"
     - ``sonnet``        -> backend="claude", provider_model="sonnet"
     - ``opus``          -> backend="claude", provider_model="opus"
     - ``claude/opus``   -> backend="claude", provider_model="opus"

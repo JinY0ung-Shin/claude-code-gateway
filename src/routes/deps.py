@@ -22,7 +22,7 @@ def resolve_and_get_backend(
     """Resolve model -> backend and validate backend availability.
 
     Raises HTTPException(400) if the model is not recognised by any backend.
-    Raises HTTPException(400) if the backend is not registered (e.g. Codex disabled).
+    Raises HTTPException(400) if the backend is not registered.
     """
     resolved = resolve_model(model)
 
@@ -37,13 +37,6 @@ def resolve_and_get_backend(
         )
 
     if not BackendRegistry.is_registered(resolved.backend):
-        if resolved.backend == "codex":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Codex backend is not available. Install Codex CLI to use model '{model}'."
-                ),
-            )
         raise HTTPException(
             status_code=400,
             detail=f"Backend '{resolved.backend}' for model '{model}' is not available.",
@@ -126,16 +119,6 @@ def validate_image_request(request: Any, backend: BackendClient) -> None:
             detail=f"Image input is not supported for the {backend.name} backend.",
         )
 
-
-def capture_provider_session_id(chunks_buffer: list, session: Any) -> None:
-    """Scan chunks for a ``codex_session`` meta-event and store the thread_id."""
-    for chunk in chunks_buffer:
-        if isinstance(chunk, dict) and chunk.get("type") == "codex_session":
-            thread_id = chunk.get("session_id")
-            if thread_id and session is not None:
-                session.provider_session_id = thread_id
-                logger.debug("Captured Codex thread_id: %s", thread_id)
-            break
 
 
 def truncate_image_data(obj: Any) -> Any:

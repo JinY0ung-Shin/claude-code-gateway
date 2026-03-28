@@ -20,28 +20,6 @@ class TestResolveModel:
             assert r.provider_model == model
             assert r.public_model == model
 
-    def test_codex_bare(self):
-        r = resolve_model("codex")
-        assert r.backend == "codex"
-        assert r.provider_model == "gpt-5.4"  # default model
-        assert r.public_model == "codex"
-
-    def test_codex_slash_submodel(self):
-        r = resolve_model("codex/o3")
-        assert r.backend == "codex"
-        assert r.provider_model == "o3"
-        assert r.public_model == "codex/o3"
-
-    def test_codex_slash_complex_submodel(self):
-        r = resolve_model("codex/o4-mini")
-        assert r.backend == "codex"
-        assert r.provider_model == "o4-mini"
-
-    def test_codex_slash_gpt5(self):
-        r = resolve_model("codex/gpt-5")
-        assert r.backend == "codex"
-        assert r.provider_model == "gpt-5"
-
     def test_unknown_model_returns_none(self):
         r = resolve_model("some-unknown-model")
         assert r is None
@@ -54,13 +32,7 @@ class TestResolveModel:
     def test_resolved_model_is_frozen(self):
         r = resolve_model("sonnet")
         with pytest.raises(AttributeError):
-            r.backend = "codex"  # type: ignore[misc]
-
-    def test_empty_submodel_after_slash(self):
-        """'codex/' should resolve to codex with provider_model=None."""
-        r = resolve_model("codex/")
-        assert r.backend == "codex"
-        assert r.provider_model is None
+            r.backend = "other"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -130,39 +102,30 @@ class TestBackendRegistry:
     def test_available_models_empty_when_no_backends(self):
         assert BackendRegistry.available_models() == []
 
-    def test_available_models_claude_only(self):
+    def test_available_models(self):
         BackendRegistry.register("claude", FakeBackend())
         models = BackendRegistry.available_models()
         ids = [m["id"] for m in models]
         assert "opus" in ids
         assert "sonnet" in ids
         assert "haiku" in ids
-        assert "codex" not in ids
         for m in models:
             assert m["owned_by"] == "anthropic"
 
-    def test_available_models_both_backends(self):
-        BackendRegistry.register("claude", FakeBackend())
-        BackendRegistry.register("codex", FakeBackend())
-        models = BackendRegistry.available_models()
-        ids = [m["id"] for m in models]
-        assert "sonnet" in ids
-        assert "codex" in ids
-        codex_entry = [m for m in models if m["id"] == "codex"][0]
-        assert codex_entry["owned_by"] == "openai"
-
-    def test_available_models_codex_only(self):
-        BackendRegistry.register("codex", FakeBackend())
-        models = BackendRegistry.available_models()
-        ids = [m["id"] for m in models]
-        assert "codex" in ids
-        assert "sonnet" not in ids
-
     def test_get_error_message_known_but_not_available(self):
         """When a descriptor is registered but no client, error says 'known but not available'."""
+        from src.backends.base import BackendDescriptor
+
+        fake_desc = BackendDescriptor(
+            name="fake_unavailable",
+            models=["fake-model"],
+            owned_by="test",
+            resolve_fn=lambda m: None,
+        )
+        BackendRegistry.register_descriptor(fake_desc)
         BackendRegistry.register("claude", FakeBackend())
         with pytest.raises(ValueError, match="known but not available"):
-            BackendRegistry.get("codex")
+            BackendRegistry.get("fake_unavailable")
 
     def test_get_error_message_lists_available_for_unknown(self):
         """When a backend is completely unknown, error lists available backends."""

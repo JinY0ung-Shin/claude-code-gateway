@@ -1,3 +1,3 @@
-"""Claude Code Gateway - A FastAPI-based multi-backend API gateway for Claude Code and Codex."""
+"""Claude Code Gateway - A FastAPI-based API gateway for Claude Code."""
 
 __version__ = "2.2.0"

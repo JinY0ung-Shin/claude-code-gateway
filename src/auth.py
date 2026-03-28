@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 class BackendAuthProvider(ABC):
     """Abstract base for backend-specific authentication.
 
-    Each backend (Claude, Codex, etc.) implements this to manage its own
-    API key validation and environment variable injection.
+    Each backend implements this to manage its own API key validation
+    and environment variable injection.
     """
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Backend identifier (e.g. 'claude', 'codex')."""
+        """Backend identifier (e.g. 'claude')."""
 
     @abstractmethod
     def validate(self) -> Dict[str, Any]:
@@ -42,9 +42,7 @@ class BackendAuthProvider(ABC):
     def get_isolation_vars(self) -> List[str]:
         """Return env var names that must be REMOVED when calling this backend.
 
-        Prevents cross-backend key leakage. For example, Claude's provider
-        returns ["OPENAI_API_KEY"] so that Codex credentials are never
-        visible to the Claude SDK process.
+        Prevents cross-backend key leakage.
         """
 
 
@@ -60,11 +58,6 @@ def _get_claude_auth_provider_class():
 
     return ClaudeAuthProvider
 
-
-def _get_codex_auth_provider_class():
-    from src.backends.codex.auth import CodexAuthProvider
-
-    return CodexAuthProvider
 
 
 # ============================================================================
@@ -91,9 +84,6 @@ class ClaudeCodeAuthManager:
         self.auth_method = self._claude_provider.auth_method
         self.auth_status = self._validate_auth_method()
 
-        # Codex provider (lazy — only used when explicitly requested)
-        self._codex_provider = None
-
     # ------------------------------------------------------------------
     # Backend provider access
     # ------------------------------------------------------------------
@@ -118,11 +108,6 @@ class ClaudeCodeAuthManager:
         # Pre-startup / fallback: direct instantiation for known backends
         if backend == "claude":
             return self._claude_provider
-        if backend == "codex":
-            if self._codex_provider is None:
-                _CodexAuthProvider = _get_codex_auth_provider_class()
-                self._codex_provider = _CodexAuthProvider()
-            return self._codex_provider
         raise ValueError(f"Unknown backend: {backend!r}")
 
     # ------------------------------------------------------------------
@@ -258,8 +243,8 @@ def get_all_backends_auth_info() -> Dict[str, Any]:
     # Use descriptors to discover all known backends
     descriptors = BackendRegistry.all_descriptors()
     backend_names = set(descriptors.keys())
-    # Also include hard-coded fallbacks for pre-startup
-    backend_names.update(("claude", "codex"))
+    # Also include hard-coded fallback for pre-startup
+    backend_names.add("claude")
 
     for backend_name in sorted(backend_names):
         try:
@@ -281,6 +266,4 @@ def get_all_backends_auth_info() -> Dict[str, Any]:
 def __getattr__(name):
     if name == "ClaudeAuthProvider":
         return _get_claude_auth_provider_class()
-    if name == "CodexAuthProvider":
-        return _get_codex_auth_provider_class()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

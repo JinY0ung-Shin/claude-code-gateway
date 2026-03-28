@@ -924,7 +924,7 @@ class TestMixedBackendSessionInvariant:
     async def test_streaming_mixed_backend_rejected_without_session_pollution(
         self, isolated_session_manager
     ):
-        """A session created with Claude rejects a Codex model without adding messages."""
+        """A session created with Claude rejects a different backend without adding messages."""
         mock_run, _ = make_mock_run_completion()
 
         # First turn: create session with Claude backend
@@ -946,30 +946,30 @@ class TestMixedBackendSessionInvariant:
         assert session.backend == "claude"
         messages_before = len(session.messages)
 
-        # Second turn: attempt with a different backend (Codex) — should be rejected
-        codex_resolved = ResolvedModel(
-            public_model="codex",
-            backend="codex",
+        # Second turn: attempt with a different backend — should be rejected
+        other_resolved = ResolvedModel(
+            public_model="other-model",
+            backend="other",
             provider_model=None,
         )
-        mock_codex_backend = MagicMock()
+        mock_other_backend = MagicMock()
 
         from fastapi import HTTPException
 
         with (
             patch(
                 "src.main._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_codex_backend),
+                return_value=(other_resolved, mock_other_backend),
             ),
             patch(
                 "src.routes.chat._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_codex_backend),
+                return_value=(other_resolved, mock_other_backend),
             ),
             patch("src.routes.chat._validate_backend_auth"),
             patch("src.routes.chat._build_backend_options", return_value={"model": "sonnet"}),
         ):
             second_req = ChatCompletionRequest(
-                model="codex",
+                model="other-model",
                 messages=[Message(role="user", content="should not be stored")],
                 session_id="test-mixed-backend",
                 stream=True,
@@ -999,24 +999,24 @@ class TestMixedBackendSessionInvariant:
         messages_before = len(session.messages)
 
         # Attempt non-streaming with different backend
-        codex_resolved = ResolvedModel(
-            public_model="codex",
-            backend="codex",
+        other_resolved = ResolvedModel(
+            public_model="other-model",
+            backend="other",
             provider_model=None,
         )
 
         import src.main as main
 
-        _mock_codex = MagicMock()
+        _mock_other = MagicMock()
         with (
             patch.object(
                 main,
                 "_resolve_and_get_backend",
-                return_value=(codex_resolved, _mock_codex),
+                return_value=(other_resolved, _mock_other),
             ),
             patch(
                 "src.routes.chat._resolve_and_get_backend",
-                return_value=(codex_resolved, _mock_codex),
+                return_value=(other_resolved, _mock_other),
             ),
             patch.object(main, "_validate_backend_auth"),
             patch("src.routes.chat._validate_backend_auth"),
@@ -1030,7 +1030,7 @@ class TestMixedBackendSessionInvariant:
                 resp = await client.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "codex",
+                        "model": "other-model",
                         "messages": [{"role": "user", "content": "should not be stored"}],
                         "stream": False,
                         "session_id": "test-mixed-ns",
@@ -1139,63 +1139,8 @@ class TestConcurrentFirstTurnRace:
         assert resume_calls[0]["system_prompt"] is None
 
 
-class TestCodexProviderSessionIdFallback:
-    """Verify that Codex resume rejects when provider_session_id is missing."""
-
-    @pytest.mark.asyncio
-    async def test_codex_resume_without_provider_session_id_returns_409(
-        self, isolated_session_manager
-    ):
-        """If a Codex first turn failed before yielding thread_id,
-        the second turn must NOT fall back to gateway session_id for resume.
-
-        Regression: the old code used ``session.provider_session_id or request.session_id``
-        which would send a meaningless gateway UUID to Codex as resume token.
-        """
-        from fastapi import HTTPException
-        from src.main import generate_streaming_response
-        from src.models import ChatCompletionRequest, Message
-
-        # Simulate a Codex session whose first turn failed (no provider_session_id)
-        session = isolated_session_manager.get_or_create_session("test-codex-no-thread")
-        session.backend = "codex"
-        session.add_messages([Message(role="user", content="first turn")])
-        # provider_session_id is deliberately None (first turn timed out)
-
-        codex_resolved = ResolvedModel(
-            public_model="codex",
-            backend="codex",
-            provider_model=None,
-        )
-        mock_codex_backend = MagicMock()
-
-        with (
-            patch(
-                "src.main._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_codex_backend),
-            ),
-            patch(
-                "src.routes.chat._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_codex_backend),
-            ),
-            patch("src.routes.chat._validate_backend_auth"),
-            patch("src.routes.chat._build_backend_options", return_value={"model": "sonnet"}),
-        ):
-            second_req = ChatCompletionRequest(
-                model="codex",
-                messages=[Message(role="user", content="second turn")],
-                session_id="test-codex-no-thread",
-                stream=True,
-            )
-            with pytest.raises(HTTPException) as exc_info:
-                async for _ in generate_streaming_response(second_req, "req-codex-2"):
-                    pass
-
-        assert exc_info.value.status_code == 409
-        assert "thread_id" in str(exc_info.value.detail)
-
-        # Backend should never have been called
-        mock_codex_backend.run_completion.assert_not_called()
+class TestClaudeResumeWithoutProviderSessionId:
+    """Verify Claude resume fallback to gateway session_id."""
 
     @pytest.mark.asyncio
     async def test_claude_resume_without_provider_session_id_falls_back_normally(
@@ -1227,105 +1172,6 @@ class TestCodexProviderSessionIdFallback:
         assert captured_kwargs.get("resume") == "test-claude-fallback"
 
 
-class TestCodex409GuardSessionPollution:
-    """Verify that a Codex 409 rejection does NOT pollute session.messages.
-
-    Regression: if the 409 guard fires after session.add_messages(), the
-    rejected turn's messages remain in the session and corrupt future turns.
-    The fix moves the guard before add_messages().
-    """
-
-    @pytest.mark.asyncio
-    async def test_streaming_409_does_not_pollute_session(self, isolated_session_manager):
-        """Streaming: session.messages must be unchanged after 409 rejection."""
-        from fastapi import HTTPException
-        from src.main import generate_streaming_response
-        from src.models import ChatCompletionRequest, Message
-
-        session = isolated_session_manager.get_or_create_session("codex-409-poll-s")
-        session.backend = "codex"
-        session.add_messages([Message(role="user", content="turn-1")])
-        # provider_session_id deliberately None (first turn failed)
-        msgs_before = len(session.messages)
-
-        codex_resolved = ResolvedModel(public_model="codex", backend="codex", provider_model=None)
-        mock_codex = MagicMock()
-
-        with (
-            patch(
-                "src.main._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_codex),
-            ),
-            patch(
-                "src.routes.chat._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_codex),
-            ),
-            patch("src.routes.chat._validate_backend_auth"),
-            patch("src.routes.chat._build_backend_options", return_value={"model": "sonnet"}),
-        ):
-            req = ChatCompletionRequest(
-                model="codex",
-                messages=[Message(role="user", content="rejected turn")],
-                session_id="codex-409-poll-s",
-                stream=True,
-            )
-            with pytest.raises(HTTPException) as exc_info:
-                async for _ in generate_streaming_response(req, "req-poll-s"):
-                    pass
-
-        assert exc_info.value.status_code == 409
-        assert len(session.messages) == msgs_before
-
-    @pytest.mark.asyncio
-    async def test_non_streaming_409_does_not_pollute_session(self, isolated_session_manager):
-        """Non-streaming: session.messages must be unchanged after 409 rejection."""
-        from fastapi.testclient import TestClient
-        from src.models import Message
-        from src import main
-
-        session = isolated_session_manager.get_or_create_session("codex-409-poll-ns")
-        session.backend = "codex"
-        session.add_messages([Message(role="user", content="turn-1")])
-        msgs_before = len(session.messages)
-
-        codex_resolved = ResolvedModel(public_model="codex", backend="codex", provider_model=None)
-        mock_codex = MagicMock()
-
-        with (
-            patch(
-                "src.main._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_codex),
-            ),
-            patch(
-                "src.routes.chat._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_codex),
-            ),
-            patch("src.routes.chat._validate_backend_auth"),
-            patch("src.routes.chat._build_backend_options", return_value={"model": "sonnet"}),
-            patch("src.main.discover_backends"),
-            patch("src.main._verify_backends"),
-            patch("src.routes.chat.verify_api_key", new=AsyncMock(return_value=True)),
-            patch.object(
-                main,
-                "validate_claude_code_auth",
-                return_value=(True, {"method": "test"}),
-            ),
-        ):
-            with TestClient(main.app) as client:
-                resp = client.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "codex",
-                        "messages": [{"role": "user", "content": "rejected turn"}],
-                        "session_id": "codex-409-poll-ns",
-                        "stream": False,
-                    },
-                )
-
-        assert resp.status_code == 409
-        assert len(session.messages) == msgs_before
-
-
 class TestStreamingPreflightHTTPStatus:
     """Verify that session preflight errors return correct HTTP status codes
     even for streaming requests.
@@ -1343,7 +1189,7 @@ class TestStreamingPreflightHTTPStatus:
         from src import main
 
         session = isolated_session_manager.get_or_create_session("preflight-400")
-        session.backend = "codex"
+        session.backend = "other"
         session.add_messages([Message(role="user", content="turn-1")])
 
         claude_resolved = ResolvedModel(
@@ -1385,53 +1231,3 @@ class TestStreamingPreflightHTTPStatus:
 
         assert resp.status_code == 400
         assert "backend" in resp.text.lower()
-
-    @pytest.mark.asyncio
-    async def test_streaming_codex_409_returns_409_http(self, isolated_session_manager):
-        """Streaming Codex 409 guard returns HTTP 409, not 200."""
-        import httpx
-        from src.models import Message
-        from src import main
-
-        session = isolated_session_manager.get_or_create_session("preflight-409")
-        session.backend = "codex"
-        session.add_messages([Message(role="user", content="turn-1")])
-        # provider_session_id deliberately None
-
-        codex_resolved = ResolvedModel(public_model="codex", backend="codex", provider_model=None)
-        mock_backend = MagicMock()
-
-        with (
-            patch(
-                "src.main._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_backend),
-            ),
-            patch(
-                "src.routes.chat._resolve_and_get_backend",
-                return_value=(codex_resolved, mock_backend),
-            ),
-            patch("src.routes.chat._validate_backend_auth"),
-            patch("src.routes.chat._build_backend_options", return_value={"model": "sonnet"}),
-            patch("src.main.discover_backends"),
-            patch("src.main._verify_backends"),
-            patch("src.routes.chat.verify_api_key", new=AsyncMock(return_value=True)),
-            patch.object(
-                main,
-                "validate_claude_code_auth",
-                return_value=(True, {"method": "test"}),
-            ),
-        ):
-            transport = httpx.ASGITransport(app=main.app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "codex",
-                        "messages": [{"role": "user", "content": "turn-2"}],
-                        "session_id": "preflight-409",
-                        "stream": True,
-                    },
-                )
-
-        assert resp.status_code == 409
-        assert "thread_id" in resp.text

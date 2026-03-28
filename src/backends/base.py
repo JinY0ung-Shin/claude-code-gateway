@@ -47,7 +47,7 @@ class ResolvedModel:
 
     Attributes:
         public_model: The original model string from the request.
-        backend: Backend name ("claude" or "codex").
+        backend: Backend name (e.g. "claude").
         provider_model: Model identifier passed to the backend, or None for
             the backend's default.
     """
@@ -148,7 +148,7 @@ class BackendRegistry:
     Usage in ``main.py``::
 
         BackendRegistry.register("claude", claude_cli)
-        BackendRegistry.register("codex", codex_cli)
+        BackendRegistry.register("my_backend", my_client)
 
         resolved = resolve_model(request.model)
         backend  = BackendRegistry.get(resolved.backend)

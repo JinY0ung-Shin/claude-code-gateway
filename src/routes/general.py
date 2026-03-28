@@ -234,7 +234,6 @@ async def get_auth_status(request: Request):
                 else ("runtime" if auth_manager.runtime_api_key else "none")
             ),
             "registered_backends": registered_backends,
-            "codex_available": BackendRegistry.is_registered("codex"),
             "version": "1.0.0",
         },
     }

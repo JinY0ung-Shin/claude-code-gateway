@@ -434,7 +434,7 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                     </div>
                     <div>
                         <h1 style="margin:0;">Claude Code Gateway</h1>
-                        <p style="margin:0;color:var(--pico-muted-color);">Multi-backend API gateway for Claude and Codex</p>
+                        <p style="margin:0;color:var(--pico-muted-color);">API gateway for Claude Code</p>
                     </div>
                 </div>
                 <div class="header-right">
@@ -640,10 +640,6 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
                     <div class="config-item">
                         <code class="green-code">Claude</code>
                         <p>sonnet, opus, haiku</p>
-                    </div>
-                    <div class="config-item">
-                        <code class="green-code">Codex</code>
-                        <p>codex, codex/&lt;model&gt;</p>
                     </div>
                 </div>
             </article>

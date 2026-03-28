@@ -35,7 +35,7 @@ class ParameterValidator:
     def validate_model(cls, model: str) -> bool:
         """Validate that the model is supported.
 
-        Supports slash-delimited patterns like ``codex/o3``: the base prefix
+        Supports slash-delimited patterns like ``claude/opus``: the base prefix
         (before the first ``/``) is checked against the known model list.
         Returns False for unknown models.
         """

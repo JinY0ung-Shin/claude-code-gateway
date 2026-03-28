@@ -45,20 +45,6 @@ class TestAuthGetProviderRegistryException:
             provider = src.auth.auth_manager.get_provider("claude")
             assert provider.name == "claude"
 
-    def test_get_provider_falls_back_for_codex_when_registry_raises(self):
-        """When BackendRegistry raises, codex provider falls back to direct instantiation."""
-        import src.auth
-
-        importlib.reload(src.auth)
-
-        mock_registry = MagicMock()
-        mock_registry.is_registered.side_effect = Exception("registry broken")
-
-        with patch("src.backends.base.BackendRegistry", mock_registry):
-            provider = src.auth.auth_manager.get_provider("codex")
-            assert provider.name == "codex"
-
-
 class TestAuthGetApiKeyImportException:
     """Cover lines 139-140: Exception in get_api_key() when importing main fails."""
 
@@ -115,17 +101,16 @@ class TestAuthGetAllBackendsAuthInfoException:
         original_get_provider = src.auth.auth_manager.get_provider
 
         def flaky_get_provider(backend):
-            if backend == "codex":
-                raise RuntimeError("codex provider exploded")
+            if backend == "claude":
+                raise RuntimeError("claude provider exploded")
             return original_get_provider(backend)
 
         with patch.object(src.auth.auth_manager, "get_provider", side_effect=flaky_get_provider):
             result = src.auth.get_all_backends_auth_info()
 
-        assert "codex" in result
-        assert result["codex"]["status"]["valid"] is False
-        assert "codex provider exploded" in result["codex"]["status"]["errors"][0]
         assert "claude" in result
+        assert result["claude"]["status"]["valid"] is False
+        assert "claude provider exploded" in result["claude"]["status"]["errors"][0]
 
 
 # ============================================================================

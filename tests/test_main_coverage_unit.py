@@ -5,12 +5,11 @@ Coverage tests for uncovered lines in src/main.py.
 Targets specific line groups that were previously uncovered:
 - Backend verification timeout/error logging during startup
 - Raw request body capture in DEBUG mode
-- HTTPException for unavailable backend (Codex not installed)
+- HTTPException for unavailable backend
 - HTTPException when backend auth fails
 - BackendConfigError catching
 - _is_assistant_content_chunk() wrapper
 - Session lock error handling
-- Exception in _capture_provider_session_id()
 - Preflight fast-path for pre-validated session
 - Usage data extraction from SDK chunks
 - Provider session_id capture from partial chunks
@@ -223,26 +222,15 @@ class TestValidationExceptionHandlerDebugBodyFallback:
 
 
 # ===========================================================================
-# Lines 449-456: HTTPException for unavailable backend (Codex not installed)
+# Lines 449-456: HTTPException for unavailable backend
 # ===========================================================================
 
 
 class TestResolveAndGetBackendErrors:
     """Cover _resolve_and_get_backend when backend is not registered."""
 
-    def test_codex_backend_not_available(self):
-        """Lines 449-455: Codex model requested but Codex not registered."""
-        # Ensure codex is NOT registered
-        BackendRegistry.unregister("codex")
-
-        with pytest.raises(HTTPException) as exc_info:
-            main._resolve_and_get_backend("codex")
-
-        assert exc_info.value.status_code == 400
-        assert "Codex backend is not available" in exc_info.value.detail
-
     def test_unknown_backend_not_available(self):
-        """Lines 456-459: Non-codex backend not available."""
+        """Lines 456-459: Non-registered backend not available."""
         # Create a model that resolves to a non-existent backend
         from src.backends.base import BackendDescriptor
 
@@ -354,7 +342,7 @@ class TestStreamingSessionPreflightErrors:
         session.add_messages([Message(role="user", content="previous")])
         session.backend = "claude"
 
-        resolved = _make_resolved("codex")
+        resolved = _make_resolved("other")
         mock_backend = MagicMock()
         options = {"model": DEFAULT_MODEL}
 
@@ -365,67 +353,6 @@ class TestStreamingSessionPreflightErrors:
         assert "Cannot mix backends" in exc_info.value.detail
         # Lock should have been released
         assert not session.lock.locked()
-
-    async def test_codex_resume_guard_releases_lock(self):
-        """Lines 647-655, 663-666: Codex resume with no thread_id releases lock."""
-        request = ChatCompletionRequest(
-            model="codex",
-            messages=[Message(role="user", content="Hi")],
-            session_id="test-codex-resume-session",
-        )
-
-        session = session_manager.get_or_create_session("test-codex-resume-session")
-        session.add_messages([Message(role="user", content="previous")])
-        session.backend = "codex"
-        session.provider_session_id = None
-
-        resolved = _make_resolved("codex", "codex")
-        mock_backend = MagicMock()
-        options = {"model": "codex"}
-
-        with pytest.raises(HTTPException) as exc_info:
-            await main._streaming_session_preflight(request, resolved, mock_backend, options)
-
-        assert exc_info.value.status_code == 409
-        assert "Cannot resume Codex session" in exc_info.value.detail
-        assert not session.lock.locked()
-
-
-# ===========================================================================
-# Line 668: Exception in _capture_provider_session_id()
-# ===========================================================================
-
-
-class TestCaptureProviderSessionId:
-    """Cover _capture_provider_session_id edge cases."""
-
-    def test_captures_codex_session_id(self):
-        """Normal path: codex_session chunk sets provider_session_id."""
-        session = session_manager.get_or_create_session("test-capture")
-        chunks = [
-            {"type": "codex_session", "session_id": "thread-abc"},
-            {"type": "assistant", "content": [{"type": "text", "text": "hi"}]},
-        ]
-
-        main._capture_provider_session_id(chunks, session)
-
-        assert session.provider_session_id == "thread-abc"
-
-    def test_skips_when_no_codex_session(self):
-        """No codex_session chunk means no change."""
-        session = session_manager.get_or_create_session("test-no-capture")
-        chunks = [{"type": "assistant", "content": [{"type": "text", "text": "hi"}]}]
-
-        main._capture_provider_session_id(chunks, session)
-
-        assert session.provider_session_id is None
-
-    def test_skips_when_session_is_none(self):
-        """session=None should not raise."""
-        chunks = [{"type": "codex_session", "session_id": "thread-abc"}]
-        # Should not raise
-        main._capture_provider_session_id(chunks, None)
-
 
 # ===========================================================================
 # Lines 715-718: Preflight fast-path for pre-validated session
@@ -583,79 +510,6 @@ class TestStreamingUsageFromSdkChunks:
 # ===========================================================================
 
 
-class TestStreamingErrorCapturesProviderSessionId:
-    """Cover mid-stream failure capturing provider_session_id."""
-
-    async def test_mid_stream_error_captures_codex_thread_id(self):
-        """Lines 830-831: session is not None and chunks_buffer has content."""
-        session = session_manager.get_or_create_session("test-error-capture")
-        session.backend = "claude"
-        session.add_messages([Message(role="user", content="turn 1")])
-
-        async def failing_run(**kwargs):
-            yield {"type": "codex_session", "session_id": "thread-error-123"}
-            raise RuntimeError("mid-stream failure")
-
-        mock_backend = MagicMock()
-        mock_backend.run_completion = failing_run
-        mock_backend.parse_message = MagicMock(return_value=None)
-
-        await session.lock.acquire()
-
-        preflight = {
-            "session": session,
-            "lock_acquired": True,
-            "prompt": "turn 2",
-            "chunk_kwargs": {
-                "prompt": "turn 2",
-                "model": DEFAULT_MODEL,
-                "system_prompt": None,
-                "permission_mode": "bypassPermissions",
-                "mcp_servers": None,
-                "allowed_tools": None,
-                "disallowed_tools": None,
-                "output_format": None,
-                "max_turns": 10,
-                "session_id": None,
-                "resume": "test-error-capture",
-                "stream": True,
-            },
-        }
-
-        request = ChatCompletionRequest(
-            model=DEFAULT_MODEL,
-            messages=[Message(role="user", content="turn 2")],
-            session_id="test-error-capture",
-            stream=True,
-        )
-
-        with (
-            patch.object(
-                main,
-                "_resolve_and_get_backend",
-                return_value=(_make_resolved(), mock_backend),
-            ),
-            patch.object(
-                chat_module,
-                "_resolve_and_get_backend",
-                return_value=(_make_resolved(), mock_backend),
-            ),
-        ):
-            lines = [
-                line
-                async for line in main.generate_streaming_response(
-                    request, "req-error-capture", preflight=preflight
-                )
-            ]
-
-        # Should have captured the codex thread_id despite the error
-        assert session.provider_session_id == "thread-error-123"
-        # Should have an error chunk
-        assert any("streaming_error" in line for line in lines)
-        # Lock should be released
-        assert not session.lock.locked()
-
-
 # ===========================================================================
 # Lines 862-863: Compatibility report debug logging
 # ===========================================================================
@@ -692,26 +546,6 @@ class TestCompatibilityReportDebugLogging:
 # ===========================================================================
 # Line 1037: Model resolution for /v1/messages (Claude-only guard)
 # ===========================================================================
-
-
-class TestAnthropicMessagesClaudeOnlyGuard:
-    """Cover the Claude-only guard on /v1/messages endpoint."""
-
-    def test_codex_model_rejected_on_messages_endpoint(self):
-        """Lines 1036-1044: Non-claude model raises 400."""
-        with client_context() as (client, _mock_cli):
-            response = client.post(
-                "/v1/messages",
-                json={
-                    "model": "codex",
-                    "messages": [{"role": "user", "content": "Hi"}],
-                    "max_tokens": 100,
-                },
-            )
-
-        body = response.json()
-        assert response.status_code == 400
-        assert "only supports Claude models" in body["error"]["message"]
 
 
 # ===========================================================================
@@ -920,7 +754,7 @@ class TestResponsesApiSessionValidation:
         session_id = str(uuid.uuid4())
         session = session_manager.get_or_create_session(session_id)
         session.turn_counter = 1
-        session.backend = "codex"
+        session.backend = "other"
 
         resp_id = f"resp_{session_id}_1"
 
@@ -937,34 +771,6 @@ class TestResponsesApiSessionValidation:
 
         assert response.status_code == 400
         assert "Cannot mix backends" in response.json()["error"]["message"]
-
-    def test_codex_resume_no_thread_id_returns_409(self, fake_codex_backend):
-        """Lines 1412-1420: Codex resume with no provider_session_id."""
-        session_id = str(uuid.uuid4())
-        session = session_manager.get_or_create_session(session_id)
-        session.turn_counter = 1
-        session.backend = "codex"
-        session.provider_session_id = None
-
-        resp_id = f"resp_{session_id}_1"
-
-        with client_context() as (client, _mock_cli):
-            # Register fake codex backend
-            BackendRegistry.register("codex", fake_codex_backend)
-
-            response = client.post(
-                "/v1/responses",
-                json={
-                    "model": "codex",
-                    "input": "Hi",
-                    "previous_response_id": resp_id,
-                    "stream": False,
-                },
-            )
-
-        assert response.status_code == 409
-        assert "Cannot resume Codex session" in response.json()["error"]["message"]
-
 
 # ===========================================================================
 # Lines 1430-1432: Responses API preflight lock release on error
@@ -1045,7 +851,7 @@ class TestResponsesStreamingPreflightLockRelease:
         session_id = str(uuid.uuid4())
         session = session_manager.get_or_create_session(session_id)
         session.turn_counter = 1
-        session.backend = "codex"
+        session.backend = "other"
 
         body = ResponseCreateRequest(
             model=DEFAULT_MODEL,
@@ -1070,73 +876,10 @@ class TestResponsesStreamingPreflightLockRelease:
         assert exc_info.value.status_code == 400
         assert not session.lock.locked()
 
-    async def test_codex_resume_no_thread_releases_lock_streaming(self):
-        """Lines 1430-1432: Codex resume no thread_id releases lock."""
-        from src.response_models import ResponseCreateRequest
-
-        session_id = str(uuid.uuid4())
-        session = session_manager.get_or_create_session(session_id)
-        session.turn_counter = 1
-        session.backend = "codex"
-        session.provider_session_id = None
-
-        body = ResponseCreateRequest(
-            model="codex",
-            input="Hi",
-            previous_response_id=f"resp_{session_id}_1",
-        )
-        resolved = _make_resolved("codex", "codex")
-        mock_backend = MagicMock()
-
-        with pytest.raises(HTTPException) as exc_info:
-            await main._responses_streaming_preflight(
-                body,
-                resolved,
-                mock_backend,
-                session,
-                session_id,
-                False,
-                "Hi",
-                None,
-            )
-
-        assert exc_info.value.status_code == 409
-        assert not session.lock.locked()
-
-
 # ===========================================================================
 # Line 1591: Additional uncovered path (Responses streaming exception with
 #            partial chunks capturing provider_session_id)
 # ===========================================================================
-
-
-class TestResponsesStreamingExceptionCapturesSessionId:
-    """Cover the exception path in _run_stream that captures provider_session_id."""
-
-    def test_streaming_exception_captures_codex_thread_id(self):
-        """Line 1591: chunks_buffer truthy on exception."""
-
-        async def failing_run(**kwargs):
-            yield {"type": "codex_session", "session_id": "thread-resp-err"}
-            raise RuntimeError("backend crash")
-
-        with client_context() as (client, mock_cli):
-            mock_cli.run_completion = failing_run
-            mock_cli.parse_message.return_value = None
-
-            with client.stream(
-                "POST",
-                "/v1/responses",
-                json={
-                    "model": DEFAULT_MODEL,
-                    "input": "Hi",
-                    "stream": True,
-                },
-            ) as response:
-                body = "".join(response.iter_text())
-
-        # Should contain a failed response event
-        assert "response.failed" in body or "server_error" in body
 
 
 # ===========================================================================
@@ -1227,7 +970,7 @@ class TestResponsesStreamingValidationViaEndpoint:
         session_id = str(uuid.uuid4())
         session = session_manager.get_or_create_session(session_id)
         session.turn_counter = 1
-        session.backend = "codex"
+        session.backend = "other"
 
         resp_id = f"resp_{session_id}_1"
 
@@ -1415,7 +1158,7 @@ class TestStreamingResponseHttpExceptionReraise:
         # Set up a session with wrong backend to trigger HTTPException
         session = session_manager.get_or_create_session("test-http-exc-session")
         session.add_messages([Message(role="user", content="previous")])
-        session.backend = "codex"
+        session.backend = "other"
 
         mock_backend = MagicMock()
 
@@ -1633,7 +1376,7 @@ class TestResponsesStreamingExceptionPartialCapture:
         """Line 1591: chunks_buffer has content when exception occurs."""
 
         async def failing_run(**kwargs):
-            yield {"type": "codex_session", "session_id": "thread-partial"}
+            yield {"content": [{"type": "text", "text": "partial"}]}
             raise RuntimeError("mid-stream failure")
 
         with client_context() as (client, mock_cli):
@@ -1733,67 +1476,8 @@ class TestValidationHandlerBodyReadException:
         assert body["error"]["debug"]["raw_request_body"] == "Could not read request body"
 
 
-# ===========================================================================
-# Lines 742-751: Legacy streaming Codex resume guard (no thread_id)
-# ===========================================================================
-
-
-class TestLegacyStreamingCodexResumeGuard:
-    """Cover the Codex resume guard in legacy streaming session path."""
-
-    async def test_codex_resume_no_thread_id_in_legacy_path(self):
-        """Lines 742-751: Existing Codex session without provider_session_id."""
-        from tests.conftest import FakeCodexBackend
-
-        session = session_manager.get_or_create_session("test-legacy-codex-resume")
-        session.add_messages([Message(role="user", content="turn 1")])
-        session.backend = "codex"
-        session.provider_session_id = None
-
-        fake_codex = FakeCodexBackend()
-        BackendRegistry.register("codex", fake_codex)
-
-        request = ChatCompletionRequest(
-            model="codex",
-            messages=[Message(role="user", content="turn 2")],
-            session_id="test-legacy-codex-resume",
-            stream=True,
-        )
-
-        resolved = _make_resolved("codex", "codex")
-
-        with (
-            patch.object(
-                main,
-                "_resolve_and_get_backend",
-                return_value=(resolved, fake_codex),
-            ),
-            patch.object(
-                chat_module,
-                "_resolve_and_get_backend",
-                return_value=(resolved, fake_codex),
-            ),
-            patch.object(main, "_validate_backend_auth"),
-            patch.object(chat_module, "_validate_backend_auth"),
-            patch.object(
-                main,
-                "_build_backend_options",
-                return_value={"model": "codex"},
-            ),
-            patch.object(
-                chat_module,
-                "_build_backend_options",
-                return_value={"model": "codex"},
-            ),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                [  # noqa: F841
-                    line
-                    async for line in main.generate_streaming_response(request, "req-legacy-codex")
-                ]
-
-            assert exc_info.value.status_code == 409
-            assert "Cannot resume Codex session" in exc_info.value.detail
+class TestLegacyStreamingFollowupSession:
+    """Cover the legacy streaming follow-up session path."""
 
     async def test_legacy_followup_session_with_resume(self):
         """Line 751: Existing session computes resume_id in legacy path."""
@@ -1863,10 +1547,10 @@ class TestNonStreamingBackendMismatch:
 
     def test_non_streaming_backend_mismatch_returns_400(self):
         """Line 901: Existing session with different backend → 400."""
-        # Pre-create a session with codex backend
+        # Pre-create a session with a different backend
         session = session_manager.get_or_create_session("test-non-stream-mismatch")
         session.add_messages([Message(role="user", content="turn 1")])
-        session.backend = "codex"
+        session.backend = "other"
 
         async def fake_run(**kwargs):
             yield {"content": [{"type": "text", "text": "Hi"}]}
@@ -1888,174 +1572,6 @@ class TestNonStreamingBackendMismatch:
 
         assert response.status_code == 400
         assert "Cannot mix backends" in response.json()["error"]["message"]
-
-
-# ===========================================================================
-# Lines 914-924: Non-streaming Codex resume guard in /v1/chat/completions
-# ===========================================================================
-
-
-class TestNonStreamingCodexResumeGuard:
-    """Cover the Codex resume guard in non-streaming session mode."""
-
-    def test_non_streaming_codex_resume_no_thread_id_returns_409(self, fake_codex_backend):
-        """Lines 914-924: Existing Codex session without provider_session_id."""
-        session = session_manager.get_or_create_session("test-non-stream-codex-resume")
-        session.add_messages([Message(role="user", content="turn 1")])
-        session.backend = "codex"
-        session.provider_session_id = None
-
-        with client_context() as (client, _mock_cli):
-            BackendRegistry.register("codex", fake_codex_backend)
-
-            response = client.post(
-                "/v1/chat/completions",
-                json={
-                    "model": "codex",
-                    "messages": [{"role": "user", "content": "Hi"}],
-                    "stream": False,
-                    "session_id": "test-non-stream-codex-resume",
-                },
-            )
-
-        assert response.status_code == 409
-        assert "Cannot resume Codex session" in response.json()["error"]["message"]
-
-
-# ===========================================================================
-# Line 1591: Responses streaming exception with codex_session in chunks_buffer
-# ===========================================================================
-
-
-class TestResponsesStreamingExceptionWithChunksBuffer:
-    """Cover the exact line 1591 where chunks_buffer is truthy on exception."""
-
-    def test_exception_after_codex_session_chunk(self):
-        """Line 1591: chunks_buffer has codex_session chunk when exception fires."""
-
-        # This test needs the exception to happen inside _run_stream after
-        # chunks_buffer has been populated. We need stream_response_chunks
-        # to yield some chunks before failing.
-        async def failing_run(**kwargs):
-            yield {"type": "codex_session", "session_id": "thread-1591"}
-            yield {
-                "type": "stream_event",
-                "event": {
-                    "type": "content_block_delta",
-                    "delta": {"type": "text_delta", "text": "partial"},
-                },
-            }
-            raise RuntimeError("mid-stream crash")
-
-        with client_context() as (client, mock_cli):
-            mock_cli.run_completion = failing_run
-            mock_cli.parse_message.return_value = None
-
-            with client.stream(
-                "POST",
-                "/v1/responses",
-                json={
-                    "model": DEFAULT_MODEL,
-                    "input": "Hi",
-                    "stream": True,
-                },
-            ) as response:
-                body = "".join(response.iter_text())
-
-        assert "response.failed" in body or "server_error" in body
-
-
-# ===========================================================================
-# Line 1628: Non-streaming Responses future turn inside lock (TOCTOU path)
-# ===========================================================================
-
-
-class TestNonStreamingCodexResumeWithThreadId:
-    """Cover line 924: non-streaming Codex resume with valid provider_session_id."""
-
-    def test_non_streaming_codex_resume_with_thread_id(self, fake_codex_backend):
-        """Line 924: resume_id = session.provider_session_id for existing codex session."""
-        session = session_manager.get_or_create_session("test-codex-resume-ok")
-        session.add_messages([Message(role="user", content="turn 1")])
-        session.backend = "codex"
-        session.provider_session_id = "thread-good-123"
-
-        with client_context() as (client, _mock_cli):
-            BackendRegistry.register("codex", fake_codex_backend)
-
-            response = client.post(
-                "/v1/chat/completions",
-                json={
-                    "model": "codex",
-                    "messages": [{"role": "user", "content": "turn 2"}],
-                    "stream": False,
-                    "session_id": "test-codex-resume-ok",
-                },
-            )
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["choices"][0]["message"]["content"] == "codex reply"
-
-
-class TestResponsesStreamingExceptionCaptureWithBuffer:
-    """Cover line 1591: _capture_provider_session_id when chunks_buffer has data on exception.
-
-    Line 1591 is in the outer except block of _run_stream(). It fires when:
-    1. stream_response_chunks completes (populating chunks_buffer), and
-    2. Something after the async for loop raises an exception.
-    The first _capture_provider_session_id at line 1571 can be the trigger.
-    """
-
-    def test_capture_raises_after_successful_stream(self):
-        """Line 1591: _capture_provider_session_id at line 1571 raises, outer except fires."""
-
-        async def successful_run(**kwargs):
-            yield {"type": "codex_session", "session_id": "thread-1591"}
-            yield {"content": [{"type": "text", "text": "ok"}]}
-            yield {"subtype": "success", "result": "ok"}
-
-        from src.routes.deps import capture_provider_session_id as _original_capture
-
-        call_count = 0
-
-        def capture_that_fails_first_time(chunks_buffer, sess):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise RuntimeError("capture failed on first call")
-            # Second call (line 1591 in except handler) works normally
-            _original_capture(chunks_buffer, sess)
-
-        with client_context() as (client, mock_cli):
-            mock_cli.run_completion = successful_run
-            mock_cli.parse_message.return_value = "ok"
-
-            with (
-                patch.object(
-                    main,
-                    "_capture_provider_session_id",
-                    side_effect=capture_that_fails_first_time,
-                ),
-                patch.object(
-                    responses_module,
-                    "capture_provider_session_id",
-                    side_effect=capture_that_fails_first_time,
-                ),
-            ):
-                with client.stream(
-                    "POST",
-                    "/v1/responses",
-                    json={
-                        "model": DEFAULT_MODEL,
-                        "input": "Hi",
-                        "stream": True,
-                    },
-                ) as response:
-                    body = "".join(response.iter_text())
-
-        # Outer except fires → response.failed emitted
-        assert "response.failed" in body or "server_error" in body
 
 
 class TestResponsesNonStreamingInsideLockFutureTurn:

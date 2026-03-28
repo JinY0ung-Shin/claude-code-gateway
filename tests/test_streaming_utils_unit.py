@@ -1094,7 +1094,7 @@ class TestFormatChunkContent:
         assert format_chunk_content(chunk, content_sent=False) is None
 
 
-# ==================== Embedded tool blocks (Codex collab_tool_call) ====================
+# ==================== Embedded tool blocks (collab_tool_call) ====================
 
 
 class TestExtractEmbeddedToolBlocks:
@@ -1139,21 +1139,21 @@ class TestExtractEmbeddedToolBlocks:
 
 @pytest.mark.asyncio
 async def test_stream_chunks_emits_embedded_tool_blocks_as_system_events():
-    """Codex-style embedded tool_use/tool_result in assistant content emit as system_event."""
+    """Embedded tool_use/tool_result in assistant content emit as system_event."""
 
-    async def codex_tool_source():
+    async def embedded_tool_source():
         yield {
             "type": "assistant",
             "content": [
                 {
                     "type": "tool_use",
-                    "id": "codex_agent_abc",
+                    "id": "agent_abc",
                     "name": "Agent",
                     "input": {"prompt": "explore"},
                 },
                 {
                     "type": "tool_result",
-                    "tool_use_id": "codex_agent_abc",
+                    "tool_use_id": "agent_abc",
                     "content": "Found 3 files",
                     "is_error": False,
                 },
@@ -1162,7 +1162,7 @@ async def test_stream_chunks_emits_embedded_tool_blocks_as_system_events():
         }
 
     request = ChatCompletionRequest(
-        model="codex",
+        model="claude-test",
         messages=[Message(role="user", content="Check files")],
         stream=True,
     )
@@ -1170,7 +1170,11 @@ async def test_stream_chunks_emits_embedded_tool_blocks_as_system_events():
     lines = [
         line
         async for line in stream_chunks(
-            codex_tool_source(), request, "req-codex-tool", chunks_buffer, logging.getLogger("test")
+            embedded_tool_source(),
+            request,
+            "req-embedded-tool",
+            chunks_buffer,
+            logging.getLogger("test"),
         )
     ]
 
@@ -1185,7 +1189,7 @@ async def test_stream_chunks_emits_embedded_tool_blocks_as_system_events():
     assert system_events[0]["type"] == "tool_use"
     assert system_events[0]["name"] == "Agent"
     assert system_events[1]["type"] == "tool_result"
-    assert system_events[1]["tool_use_id"] == "codex_agent_abc"
+    assert system_events[1]["tool_use_id"] == "agent_abc"
     assert system_events[1]["content"] == "Found 3 files"
 
     # Text content should also be emitted
@@ -1195,21 +1199,21 @@ async def test_stream_chunks_emits_embedded_tool_blocks_as_system_events():
 
 @pytest.mark.asyncio
 async def test_stream_response_chunks_emits_embedded_tool_blocks_as_structured_sse():
-    """Codex-style embedded tool blocks emit as response.tool_use/response.tool_result SSE."""
+    """Embedded tool blocks emit as response.tool_use/response.tool_result SSE."""
 
-    async def codex_tool_source():
+    async def embedded_tool_source():
         yield {
             "type": "assistant",
             "content": [
                 {
                     "type": "tool_use",
-                    "id": "codex_agent_xyz",
+                    "id": "agent_xyz",
                     "name": "Agent",
                     "input": {"prompt": "analyze"},
                 },
                 {
                     "type": "tool_result",
-                    "tool_use_id": "codex_agent_xyz",
+                    "tool_use_id": "agent_xyz",
                     "content": "Analysis complete",
                     "is_error": False,
                 },
@@ -1222,12 +1226,12 @@ async def test_stream_response_chunks_emits_embedded_tool_blocks_as_structured_s
     lines = [
         line
         async for line in stream_response_chunks(
-            chunk_source=codex_tool_source(),
-            model="codex",
-            response_id="resp-codex-tool",
-            output_item_id="msg-codex-tool",
+            chunk_source=embedded_tool_source(),
+            model="claude-test",
+            response_id="resp-embedded-tool",
+            output_item_id="msg-embedded-tool",
             chunks_buffer=chunks_buffer,
-            logger=logging.getLogger("test-codex-resp-tool"),
+            logger=logging.getLogger("test-embedded-resp-tool"),
             stream_result=stream_result,
         )
     ]
@@ -1240,11 +1244,11 @@ async def test_stream_response_chunks_emits_embedded_tool_blocks_as_structured_s
 
     tool_use_ev = next(p for et, p in parsed if et == "response.tool_use")
     assert tool_use_ev["name"] == "Agent"
-    assert tool_use_ev["tool_use_id"] == "codex_agent_xyz"
+    assert tool_use_ev["tool_use_id"] == "agent_xyz"
     assert tool_use_ev["input"] == {"prompt": "analyze"}
 
     tool_result_ev = next(p for et, p in parsed if et == "response.tool_result")
-    assert tool_result_ev["tool_use_id"] == "codex_agent_xyz"
+    assert tool_result_ev["tool_use_id"] == "agent_xyz"
     assert tool_result_ev["content"] == "Analysis complete"
 
     # Text content should also be emitted as delta

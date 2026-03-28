@@ -92,15 +92,7 @@ from src.backends.claude.constants import (  # noqa: E402, F401
     TOKEN_STREAMING,
     DISALLOWED_SUBAGENT_TYPES,
 )
-from src.backends.codex.constants import (  # noqa: E402, F401
-    CODEX_MODELS,
-    CODEX_DEFAULT_MODEL,
-    CODEX_CLI_PATH,
-    CODEX_TIMEOUT_MS,
-    CODEX_CONFIG_ISOLATION,
-)
-
-ALL_MODELS = CLAUDE_MODELS + CODEX_MODELS
+ALL_MODELS = CLAUDE_MODELS
 
 # Metadata → subprocess env var allowlist (comma-separated).
 # Only metadata keys listed here are passed as env vars to the Claude subprocess.

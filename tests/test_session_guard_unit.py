@@ -23,8 +23,8 @@ def _claude_resolved(model: str = "opus") -> ResolvedModel:
     return ResolvedModel(public_model=model, backend="claude", provider_model=model)
 
 
-def _codex_resolved(model: str = "codex") -> ResolvedModel:
-    return ResolvedModel(public_model=model, backend="codex", provider_model="o3")
+def _other_resolved(model: str = "other") -> ResolvedModel:
+    return ResolvedModel(public_model=model, backend="other", provider_model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ class TestBackendMismatch:
         session.messages.append(Message(role="user", content="prev"))
 
         with pytest.raises(HTTPException) as exc_info:
-            await acquire_session_preflight(session, _codex_resolved(), "sid-1")
+            await acquire_session_preflight(session, _other_resolved(), "sid-1")
 
         assert exc_info.value.status_code == 400
         assert "Cannot mix backends" in exc_info.value.detail
@@ -136,38 +136,10 @@ class TestBackendMismatch:
 
     async def test_no_error_on_new_session(self):
         session = _make_session()
-        pf = await acquire_session_preflight(session, _codex_resolved(), "sid-1")
+        pf = await acquire_session_preflight(session, _other_resolved(), "sid-1")
         try:
             assert pf.is_new is True
-            assert session.backend == "codex"
-        finally:
-            session.lock.release()
-
-
-# ---------------------------------------------------------------------------
-# Codex resume guard
-# ---------------------------------------------------------------------------
-
-
-class TestCodexResumeGuard:
-    async def test_raises_409_without_thread_id(self):
-        session = _make_session(backend="codex", provider_session_id=None)
-        session.messages.append(Message(role="user", content="prev"))
-
-        with pytest.raises(HTTPException) as exc_info:
-            await acquire_session_preflight(session, _codex_resolved(), "sid-1")
-
-        assert exc_info.value.status_code == 409
-        assert "thread_id" in exc_info.value.detail
-        assert not session.lock.locked()
-
-    async def test_no_error_with_thread_id(self):
-        session = _make_session(backend="codex", provider_session_id="thread-abc")
-        session.messages.append(Message(role="user", content="prev"))
-
-        pf = await acquire_session_preflight(session, _codex_resolved(), "sid-1")
-        try:
-            assert pf.resume_id == "thread-abc"
+            assert session.backend == "other"
         finally:
             session.lock.release()
 
@@ -248,7 +220,7 @@ class TestSessionPreflightScope:
 
         with pytest.raises(HTTPException):
             async with session_preflight_scope(
-                session, _codex_resolved(), "sid-1"
+                session, _other_resolved(), "sid-1"
             ):
                 pass  # should not reach here
         assert not session.lock.locked()

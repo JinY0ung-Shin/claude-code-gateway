@@ -217,7 +217,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Claude Code Gateway",
-    description="Multi-backend API gateway for Claude Code and Codex",
+    description="API gateway for Claude Code",
     version=__version__,
     lifespan=lifespan,
 )
@@ -510,7 +510,6 @@ from src.routes.chat import (  # noqa: E402, F401, F811
     _resolve_and_get_backend,
     _validate_image_request,
     _request_has_images,
-    _capture_provider_session_id,
     _prepare_stateless_completion,
     _prepare_session_prompt,
     _streaming_session_preflight,
