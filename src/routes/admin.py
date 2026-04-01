@@ -17,6 +17,11 @@ Rate limits:    GET  /admin/api/rate-limits
 Session msgs:   GET  /admin/api/sessions/{session_id}/messages
 Skills:         GET/PUT/DELETE /admin/api/skills/{name}
 System prompt:  GET/PUT/DELETE /admin/api/system-prompt
+Plugins:        GET  /admin/api/plugins
+Plugin detail:  GET  /admin/api/plugins/{id}
+Plugin skills:  GET  /admin/api/plugins/{id}/skills/{name}
+Marketplaces:   GET  /admin/api/marketplaces
+Blocklist:      GET  /admin/api/plugins/blocklist
 """
 
 import logging
@@ -577,3 +582,62 @@ async def reset_system_prompt_endpoint(_=Depends(require_admin)):
     except OSError as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to persist: {e}"})
     return {"status": "reset", "mode": get_prompt_mode()}
+
+
+# ---------------------------------------------------------------------------
+# Plugins (read-only)
+#
+# Route ordering matters: static paths (/blocklist) MUST be declared before
+# the catch-all {plugin_id:path} parameter, otherwise FastAPI would capture
+# "blocklist" as a plugin_id.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/plugins")
+async def list_plugins_endpoint(_=Depends(require_admin)):
+    """List all installed Claude Code plugins with metadata."""
+    from src.plugin_service import list_plugins
+
+    return {"plugins": list_plugins()}
+
+
+@router.get("/api/plugins/blocklist")
+async def get_blocklist_endpoint(_=Depends(require_admin)):
+    """Return the plugin blocklist."""
+    from src.plugin_service import get_plugin_blocklist
+
+    return {"blocklist": get_plugin_blocklist()}
+
+
+@router.get("/api/plugins/{plugin_id:path}/skills/{skill_name}")
+async def get_plugin_skill_endpoint(
+    plugin_id: str,
+    skill_name: str,
+    _=Depends(require_admin),
+):
+    """Read a specific skill's content from an installed plugin."""
+    from src.plugin_service import get_plugin_skill_content
+
+    result = get_plugin_skill_content(plugin_id, skill_name)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error": "Plugin or skill not found"})
+    return result
+
+
+@router.get("/api/plugins/{plugin_id:path}")
+async def get_plugin_detail_endpoint(plugin_id: str, _=Depends(require_admin)):
+    """Return full detail for a single installed plugin."""
+    from src.plugin_service import get_plugin_detail
+
+    detail = get_plugin_detail(plugin_id)
+    if detail is None:
+        return JSONResponse(status_code=404, content={"error": "Plugin not found"})
+    return detail
+
+
+@router.get("/api/marketplaces")
+async def list_marketplaces_endpoint(_=Depends(require_admin)):
+    """Return registered plugin marketplace sources."""
+    from src.plugin_service import list_marketplaces
+
+    return {"marketplaces": list_marketplaces()}
