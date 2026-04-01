@@ -298,7 +298,9 @@ class ClaudeCodeCLI:
         extra_env: Optional[Dict[str, str]] = None,
     ) -> ClaudeAgentOptions:
         """Build ClaudeAgentOptions with common parameters."""
-        options = ClaudeAgentOptions(max_turns=max_turns, cwd=self.cwd, setting_sources=["project"])
+        options = ClaudeAgentOptions(
+            max_turns=max_turns, cwd=self.cwd, setting_sources=["project", "local"]
+        )
 
         self._configure_thinking(options)
         self._configure_sandbox(options)
