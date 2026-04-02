@@ -1360,60 +1360,167 @@ input[type="checkbox"] {
           </div>
         </div>
 
-        <div class="card mb-lg">
-          <div class="flex-between mb-md">
-            <h3 style="margin:0">System Prompt
-              <span x-show="systemPrompt.mode === 'preset'" class="badge text-xs" style="border-color:var(--border-bright); color:var(--text-dim)">PRESET</span>
-              <span x-show="systemPrompt.mode === 'file'" class="badge badge-warn text-xs">FILE DEFAULT</span>
-              <span x-show="systemPrompt.mode === 'custom'" class="badge badge-ok text-xs">CUSTOM</span>
-            </h3>
-            <div class="flex-gap-sm">
-              <span class="text-xs text-muted" x-text="systemPrompt.char_count + ' chars'"></span>
-              <button class="btn btn-sm btn-ghost" @click="resetSystemPrompt()"
-                x-show="systemPrompt.mode === 'custom'">[RESET]</button>
-              <button class="btn btn-sm btn-ghost" @click="loadSystemPrompt()">[RELOAD]</button>
+        <!-- System Prompt: Sidebar + Editor layout -->
+        <div class="sidebar mb-lg">
+          <!-- Prompt list sidebar -->
+          <div class="file-tree card">
+            <div class="flex-between mb-sm">
+              <h3 style="margin:0">Prompts</h3>
+              <button class="btn btn-sm btn-primary" @click="showNewPromptForm()">[+ NEW]</button>
             </div>
-          </div>
-          <p class="text-xs text-muted mb-md">
-            // custom system prompt replaces claude_code preset. affects new sessions only.
-          </p>
-          <div class="flex-gap-sm mb-md">
-            <label class="text-xs text-muted">TEMPLATE:</label>
-            <select @change="if($event.target.value) { applyPromptTemplate($event.target.value); $event.target.value=''; }"
-              style="font-size:0.75rem; padding:4px 8px">
-              <option value="">select...</option>
-              <template x-for="t in promptTemplates" :key="t.name">
-                <option :value="t.name" x-text="t.name"></option>
-              </template>
-            </select>
-          </div>
-          <template x-if="systemPrompt.mode === 'preset' && !systemPromptEditing && systemPrompt.preset_text">
-            <div>
-              <textarea readonly :value="systemPrompt.preset_text"
-                style="width:100%; min-height:200px; max-height:500px; font-family:var(--font); font-size:0.78rem;
-                  background:var(--bg); color:var(--text-muted); border:1px solid var(--border);
-                  padding:8px; resize:vertical; opacity:0.5; cursor:default; border-radius:0"></textarea>
-              <div class="flex-gap-sm" style="margin-top:0.5rem">
-                <button class="btn btn-sm btn-ghost" @click="systemPromptText = systemPrompt.preset_text; systemPromptEditing = true">[CUSTOMIZE]</button>
-                <span class="text-xs text-muted" x-text="systemPrompt.preset_text.length + ' chars (read-only)'"></span>
+
+            <!-- Preset entry -->
+            <div class="file-item" :class="{ active: promptView === 'preset' }" @click="selectPresetPrompt()"
+              style="border-bottom:1px solid var(--border); margin-bottom:4px; padding-bottom:8px">
+              <span class="icon" style="color:var(--text-dim)">&gt;_</span>
+              <div style="flex:1; min-width:0">
+                <div style="font-size:var(--fs-sm); font-weight:600" :style="systemPrompt.active_name == null && systemPrompt.mode !== 'custom' ? 'color:var(--green)' : 'color:var(--text)'">
+                  claude_code <span x-show="systemPrompt.active_name == null && systemPrompt.mode !== 'custom'" class="text-xs" style="color:var(--green)">ACTIVE</span>
+                </div>
+                <div class="text-xs text-muted">built-in preset</div>
               </div>
             </div>
-          </template>
-          <template x-if="systemPrompt.mode !== 'preset' || systemPromptEditing || !systemPrompt.preset_text">
-            <div>
-              <textarea x-model="systemPromptText"
-                style="width:100%; min-height:200px; max-height:500px; font-family:var(--font); font-size:0.78rem;
-                  background:var(--bg); color:var(--text); border:1px solid var(--border);
-                  padding:8px; resize:vertical; border-radius:0"
-                placeholder="// leave empty to use claude_code preset..."></textarea>
-              <div class="flex-gap-sm" style="margin-top:0.5rem">
-                <button class="btn btn-sm btn-primary" @click="saveSystemPrompt()" :disabled="!systemPromptText.trim()">[SAVE]</button>
-                <button class="btn btn-sm btn-ghost" @click="systemPromptEditing = false; systemPromptText = ''"
-                  x-show="systemPromptEditing && systemPrompt.mode === 'preset'">[CANCEL]</button>
-                <span class="text-xs text-muted" x-show="systemPromptText.trim()" x-text="systemPromptText.trim().length + ' chars'"></span>
+
+            <!-- Templates -->
+            <template x-for="t in promptTemplates" :key="'tpl-' + t.name">
+              <div class="file-item" :class="{ active: promptView === 'template' && promptViewName === t.name }"
+                @click="selectTemplatePrompt(t)">
+                <span class="icon" style="color:var(--amber)">&#9734;</span>
+                <div style="flex:1; min-width:0">
+                  <div style="font-size:var(--fs-sm); font-weight:600; color:var(--text)" x-text="t.name"></div>
+                  <div class="text-xs text-muted">template</div>
+                </div>
               </div>
+            </template>
+
+            <!-- Divider -->
+            <div x-show="namedPrompts.length > 0" style="border-top:1px solid var(--border); margin:4px 0; padding-top:4px">
+              <span class="text-xs text-muted" style="padding-left:12px">// SAVED</span>
             </div>
-          </template>
+
+            <!-- Named prompts -->
+            <template x-for="p in namedPrompts" :key="p.name">
+              <div class="file-item" :class="{ active: promptView === 'named' && promptViewName === p.name }"
+                @click="selectNamedPrompt(p.name)">
+                <span class="icon" :style="systemPrompt.active_name === p.name ? 'color:var(--green)' : 'color:var(--cyan)'"
+                  x-text="systemPrompt.active_name === p.name ? '&#9679;' : '&#9675;'"></span>
+                <div style="flex:1; min-width:0">
+                  <div style="font-size:var(--fs-sm); font-weight:600"
+                    :style="systemPrompt.active_name === p.name ? 'color:var(--green)' : 'color:var(--text)'" x-text="p.name">
+                  </div>
+                  <div class="text-xs text-muted" x-text="p.char_count + ' chars'"></div>
+                </div>
+                <span x-show="systemPrompt.active_name === p.name" class="text-xs" style="color:var(--green)">ACTIVE</span>
+              </div>
+            </template>
+          </div>
+
+          <!-- Editor area -->
+          <div class="editor-area card" style="flex:1">
+            <!-- New prompt form -->
+            <template x-if="promptView === 'new'">
+              <div style="padding:1rem">
+                <h3 style="margin-top:0">Create Prompt</h3>
+                <label class="text-xs text-muted">PROMPT_NAME:</label>
+                <input type="text" x-model="newPromptName" placeholder="my-prompt-name"
+                  style="width:100%; margin-bottom:0.5rem; margin-top:4px">
+                <p x-show="newPromptNameError" class="text-sm text-danger" style="margin:0 0 0.5rem 0" x-text="'! ' + newPromptNameError"></p>
+                <label class="text-xs text-muted">CONTENT:</label>
+                <textarea x-model="newPromptContent"
+                  style="width:100%; min-height:300px; max-height:60vh; font-family:var(--font); font-size:0.78rem;
+                    background:var(--bg); color:var(--text); border:1px solid var(--border);
+                    padding:8px; resize:vertical; border-radius:0; margin-top:4px"
+                  placeholder="// enter system prompt content..."></textarea>
+                <div class="flex-gap-sm" style="margin-top:0.75rem">
+                  <button class="btn btn-sm btn-primary" @click="createNamedPrompt()"
+                    :disabled="!newPromptName.trim() || !newPromptContent.trim() || newPromptNameError">[CREATE]</button>
+                  <button class="btn btn-sm btn-ghost" @click="promptView = null">[CANCEL]</button>
+                  <span class="text-xs text-muted" x-show="newPromptContent.trim()" x-text="newPromptContent.trim().length + ' chars'"></span>
+                </div>
+              </div>
+            </template>
+
+            <!-- No selection -->
+            <template x-if="!promptView">
+              <div class="text-muted" style="padding:3rem; text-align:center">
+                <div style="font-size:2rem; margin-bottom:0.5rem; opacity:0.2">&gt;_</div>
+                select a prompt or create new_<span class="cursor-blink"></span>
+              </div>
+            </template>
+
+            <!-- Preset view (read-only) -->
+            <template x-if="promptView === 'preset'">
+              <div>
+                <div class="flex-between mb-md">
+                  <div class="flex-gap-sm">
+                    <span style="color:var(--text-bright); font-weight:600">claude_code</span>
+                    <span class="badge text-xs" style="border-color:var(--border-bright); color:var(--text-dim)">PRESET</span>
+                    <span x-show="systemPrompt.active_name == null && systemPrompt.mode !== 'custom'" class="badge badge-ok text-xs">ACTIVE</span>
+                  </div>
+                  <span class="text-xs text-muted" x-text="(systemPrompt.preset_text?.length ?? 0) + ' chars'"></span>
+                </div>
+                <p class="text-xs text-muted mb-md">// built-in claude_code preset. read-only.</p>
+                <textarea readonly :value="systemPrompt.preset_text || ''"
+                  style="width:100%; min-height:350px; max-height:60vh; font-family:var(--font); font-size:0.78rem;
+                    background:var(--bg); color:var(--text-muted); border:1px solid var(--border);
+                    padding:8px; resize:vertical; opacity:0.5; cursor:default; border-radius:0"></textarea>
+                <div class="flex-gap-sm" style="margin-top:0.75rem">
+                  <button class="btn btn-sm btn-primary" @click="activatePreset()"
+                    :disabled="systemPrompt.active_name == null && systemPrompt.mode !== 'custom'">[ACTIVATE]</button>
+                  <button class="btn btn-sm btn-ghost" @click="forkFromPreset()">[FORK AS NEW]</button>
+                </div>
+              </div>
+            </template>
+
+            <!-- Template view (read-only, can fork) -->
+            <template x-if="promptView === 'template'">
+              <div>
+                <div class="flex-between mb-md">
+                  <div class="flex-gap-sm">
+                    <span style="color:var(--text-bright); font-weight:600" x-text="promptViewName"></span>
+                    <span class="badge text-xs" style="border-color:var(--amber); color:var(--amber)">TEMPLATE</span>
+                  </div>
+                  <span class="text-xs text-muted" x-text="(promptEditorContent?.length ?? 0) + ' chars'"></span>
+                </div>
+                <p class="text-xs text-muted mb-md">// template from docs/. save as named prompt to edit.</p>
+                <textarea readonly :value="promptEditorContent || ''"
+                  style="width:100%; min-height:350px; max-height:60vh; font-family:var(--font); font-size:0.78rem;
+                    background:var(--bg); color:var(--text-muted); border:1px solid var(--border);
+                    padding:8px; resize:vertical; opacity:0.5; cursor:default; border-radius:0"></textarea>
+                <div class="flex-gap-sm" style="margin-top:0.75rem">
+                  <button class="btn btn-sm btn-ghost" @click="forkFromTemplate()">[SAVE AS NEW]</button>
+                </div>
+              </div>
+            </template>
+
+            <!-- Named prompt editor -->
+            <template x-if="promptView === 'named'">
+              <div>
+                <div class="flex-between mb-md">
+                  <div class="flex-gap-sm">
+                    <span style="color:var(--text-bright); font-weight:600" x-text="promptViewName"></span>
+                    <span x-show="systemPrompt.active_name === promptViewName" class="badge badge-ok text-xs">ACTIVE</span>
+                    <span x-show="promptDirty" class="dirty-dot" title="Unsaved changes"></span>
+                  </div>
+                  <span class="text-xs text-muted" x-text="(promptEditorContent?.length ?? 0) + ' chars'"></span>
+                </div>
+                <p class="text-xs text-muted mb-md">// affects new sessions only after activation.</p>
+                <textarea x-model="promptEditorContent"
+                  style="width:100%; min-height:350px; max-height:60vh; font-family:var(--font); font-size:0.78rem;
+                    background:var(--bg); color:var(--text); border:1px solid var(--border);
+                    padding:8px; resize:vertical; border-radius:0"
+                  @input="promptDirty = true"></textarea>
+                <div class="flex-between" style="margin-top:0.75rem">
+                  <div class="flex-gap-sm">
+                    <button class="btn btn-sm btn-primary" @click="saveNamedPrompt()" :disabled="!promptDirty || !promptEditorContent.trim()">[SAVE]</button>
+                    <button class="btn btn-sm btn-primary" @click="activateNamedPrompt()"
+                      :disabled="systemPrompt.active_name === promptViewName && !promptDirty">[ACTIVATE]</button>
+                  </div>
+                  <button class="btn btn-sm btn-danger-ghost" @click="deleteNamedPrompt()">[DELETE]</button>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
 
         <details class="config-section">
@@ -1579,10 +1686,17 @@ function adminApp() {
     newSkillNameError: '',
     toolsRegistry: {},
     sandboxConfig: {},
-    systemPrompt: { mode: 'preset', prompt: null, resolved_prompt: null, preset_text: null, char_count: 0 },
-    systemPromptText: '',
-    systemPromptEditing: false,
+    systemPrompt: { mode: 'preset', prompt: null, resolved_prompt: null, preset_text: null, char_count: 0, active_name: null },
     promptTemplates: [],
+    namedPrompts: [],
+    promptView: null,
+    promptViewName: null,
+    promptEditorContent: '',
+    promptOriginalContent: '',
+    promptDirty: false,
+    newPromptName: '',
+    newPromptNameError: '',
+    newPromptContent: '',
     loading: { dashboard: false, logs: false, sessions: false },
 
     async init() {
@@ -1591,6 +1705,7 @@ function adminApp() {
           e.preventDefault();
           if (this.tab === 'files' && this.editor.dirty) this.saveFile();
           if (this.tab === 'skills' && this.skillDirty) this.saveSkill();
+          if (this.tab === 'config' && this.promptView === 'named' && this.promptDirty) this.saveNamedPrompt();
         }
       });
       try {
@@ -1824,42 +1939,161 @@ function adminApp() {
     async loadSystemPrompt() {
       try {
         const r = await this.api('/admin/api/system-prompt');
-        if (r.ok) {
-          const d = await r.json();
-          this.systemPrompt = d;
-          this.systemPromptText = d.prompt || '';
-          this.systemPromptEditing = false;
-        }
+        if (r.ok) { this.systemPrompt = await r.json(); }
       } catch(e) {}
       try {
         const r = await this.api('/admin/api/system-prompt/templates');
         if (r.ok) { this.promptTemplates = (await r.json()).templates || []; }
       } catch(e) {}
+      await this.loadNamedPrompts();
     },
-    applyPromptTemplate(name) {
-      const t = this.promptTemplates.find(x => x.name === name);
-      if (!t) return;
-      this.systemPromptText = t.content;
-      this.systemPromptEditing = true;
-    },
-    async saveSystemPrompt() {
-      const text = this.systemPromptText.trim();
-      if (!text) { this.showToast('Prompt cannot be empty. Use Reset.', 'err'); return; }
+    async loadNamedPrompts() {
       try {
-        const r = await this.api('/admin/api/system-prompt', {
-          method: 'PUT', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ prompt: text })
-        });
-        if (r.ok) { this.showToast('SYSTEM PROMPT UPDATED', 'ok'); await this.loadSystemPrompt(); }
-        else { const d = await r.json(); this.showToast(d.error || 'Update failed', 'err'); }
+        const r = await this.api('/admin/api/prompts');
+        if (r.ok) {
+          const d = await r.json();
+          this.namedPrompts = d.prompts || [];
+        }
+      } catch(e) {}
+    },
+
+    // --- Prompt sidebar selection ---
+    selectPresetPrompt() {
+      if (this.promptDirty && !confirm('Unsaved changes will be lost. Continue?')) return;
+      this.promptView = 'preset';
+      this.promptViewName = null;
+      this.promptEditorContent = this.systemPrompt.preset_text || '';
+      this.promptDirty = false;
+    },
+    selectTemplatePrompt(t) {
+      if (this.promptDirty && !confirm('Unsaved changes will be lost. Continue?')) return;
+      this.promptView = 'template';
+      this.promptViewName = t.name;
+      this.promptEditorContent = t.content;
+      this.promptDirty = false;
+    },
+    async selectNamedPrompt(name) {
+      if (this.promptDirty && !confirm('Unsaved changes will be lost. Continue?')) return;
+      try {
+        const r = await this.api('/admin/api/prompts/' + encodeURIComponent(name));
+        if (r.ok) {
+          const d = await r.json();
+          this.promptView = 'named';
+          this.promptViewName = d.name;
+          this.promptEditorContent = d.content;
+          this.promptOriginalContent = d.content;
+          this.promptDirty = false;
+        } else {
+          const d = await r.json();
+          this.showToast(d.error || 'Failed to load', 'err');
+        }
       } catch(e) { this.showToast('Connection error', 'err'); }
     },
-    async resetSystemPrompt() {
-      if (!confirm('Reset system prompt to default?')) return;
+    showNewPromptForm() {
+      if (this.promptDirty && !confirm('Unsaved changes will be lost. Continue?')) return;
+      this.promptView = 'new';
+      this.promptViewName = null;
+      this.newPromptName = '';
+      this.newPromptNameError = '';
+      this.newPromptContent = '';
+      this.promptDirty = false;
+    },
+
+    // --- Named prompt CRUD ---
+    async createNamedPrompt() {
+      const name = this.newPromptName.trim();
+      const content = this.newPromptContent.trim();
+      if (!name || !content) return;
+      try {
+        const r = await this.api('/admin/api/prompts/' + encodeURIComponent(name), {
+          method: 'PUT', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ content })
+        });
+        if (r.ok) {
+          this.showToast('PROMPT CREATED: ' + name, 'ok');
+          await this.loadNamedPrompts();
+          await this.selectNamedPrompt(name);
+        } else {
+          const d = await r.json();
+          this.showToast(d.error || 'Create failed', 'err');
+        }
+      } catch(e) { this.showToast('Connection error', 'err'); }
+    },
+    async saveNamedPrompt() {
+      if (!this.promptViewName || !this.promptEditorContent.trim()) return;
+      try {
+        const r = await this.api('/admin/api/prompts/' + encodeURIComponent(this.promptViewName), {
+          method: 'PUT', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ content: this.promptEditorContent.trim() })
+        });
+        if (r.ok) {
+          this.promptOriginalContent = this.promptEditorContent.trim();
+          this.promptDirty = false;
+          this.showToast('PROMPT SAVED', 'ok');
+          await this.loadNamedPrompts();
+          // If this was the active prompt, re-activate to pick up changes
+          if (this.systemPrompt.active_name === this.promptViewName) {
+            await this.activateNamedPrompt();
+          }
+        } else {
+          const d = await r.json();
+          this.showToast(d.error || 'Save failed', 'err');
+        }
+      } catch(e) { this.showToast('Connection error', 'err'); }
+    },
+    async deleteNamedPrompt() {
+      if (!this.promptViewName) return;
+      if (!confirm('Delete prompt "' + this.promptViewName + '"?')) return;
+      try {
+        const r = await this.api('/admin/api/prompts/' + encodeURIComponent(this.promptViewName), { method: 'DELETE' });
+        if (r.ok) {
+          this.showToast('PROMPT DELETED', 'ok');
+          this.promptView = null;
+          this.promptViewName = null;
+          this.promptDirty = false;
+          await this.loadNamedPrompts();
+          await this.loadSystemPrompt();
+        } else {
+          const d = await r.json();
+          this.showToast(d.error || 'Delete failed', 'err');
+        }
+      } catch(e) { this.showToast('Connection error', 'err'); }
+    },
+    async activateNamedPrompt() {
+      if (!this.promptViewName) return;
+      // Save first if dirty
+      if (this.promptDirty) await this.saveNamedPrompt();
+      try {
+        const r = await this.api('/admin/api/prompts/' + encodeURIComponent(this.promptViewName) + '/activate', { method: 'POST' });
+        if (r.ok) {
+          this.showToast('ACTIVATED: ' + this.promptViewName, 'ok');
+          await this.loadSystemPrompt();
+        } else {
+          const d = await r.json();
+          this.showToast(d.error || 'Activate failed', 'err');
+        }
+      } catch(e) { this.showToast('Connection error', 'err'); }
+    },
+    async activatePreset() {
+      if (!confirm('Reset to claude_code preset?')) return;
       try {
         const r = await this.api('/admin/api/system-prompt', { method: 'DELETE' });
-        if (r.ok) { this.showToast('SYSTEM PROMPT RESET', 'ok'); await this.loadSystemPrompt(); }
+        if (r.ok) { this.showToast('PRESET ACTIVATED', 'ok'); await this.loadSystemPrompt(); }
       } catch(e) {}
+    },
+    forkFromPreset() {
+      this.promptView = 'new';
+      this.newPromptName = '';
+      this.newPromptNameError = '';
+      this.newPromptContent = this.systemPrompt.preset_text || '';
+      this.promptDirty = false;
+    },
+    forkFromTemplate() {
+      this.promptView = 'new';
+      this.newPromptName = this.promptViewName ? this.promptViewName.replace(/-reference$/, '') : '';
+      this.newPromptNameError = '';
+      this.newPromptContent = this.promptEditorContent || '';
+      this.promptDirty = false;
     },
 
     async loadSkills() {

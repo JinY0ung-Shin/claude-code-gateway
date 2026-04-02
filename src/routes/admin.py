@@ -17,6 +17,8 @@ Rate limits:    GET  /admin/api/rate-limits
 Session msgs:   GET  /admin/api/sessions/{session_id}/messages
 Skills:         GET/PUT/DELETE /admin/api/skills/{name}
 System prompt:  GET/PUT/DELETE /admin/api/system-prompt
+Named prompts:  GET/PUT/DELETE /admin/api/prompts/{name}
+                POST /admin/api/prompts/{name}/activate
 Plugins:        GET  /admin/api/plugins
 Plugin detail:  GET  /admin/api/plugins/{id}
 Plugin skills:  GET  /admin/api/plugins/{id}/skills/{name}
@@ -86,6 +88,10 @@ class SkillWriteRequest(BaseModel):
 
 class SystemPromptUpdate(BaseModel):
     prompt: str
+
+
+class NamedPromptWrite(BaseModel):
+    content: str
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +540,7 @@ async def list_prompt_templates(_=Depends(require_admin)):
 async def get_system_prompt_endpoint(_=Depends(require_admin)):
     """Return the current system prompt and its mode."""
     from src.system_prompt import (
+        get_active_prompt_name,
         get_preset_text,
         get_prompt_mode,
         get_raw_system_prompt,
@@ -548,6 +555,7 @@ async def get_system_prompt_endpoint(_=Depends(require_admin)):
         "resolved_prompt": resolved,
         "preset_text": get_preset_text(),
         "char_count": len(resolved) if resolved else 0,
+        "active_name": get_active_prompt_name(),
     }
 
 
@@ -582,6 +590,77 @@ async def reset_system_prompt_endpoint(_=Depends(require_admin)):
     except OSError as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to persist: {e}"})
     return {"status": "reset", "mode": get_prompt_mode()}
+
+
+# ---------------------------------------------------------------------------
+# Named Prompts
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/prompts")
+async def list_prompts_endpoint(_=Depends(require_admin)):
+    """List all saved named prompts."""
+    from src.system_prompt import get_active_prompt_name, list_named_prompts
+
+    return {
+        "prompts": list_named_prompts(),
+        "active_name": get_active_prompt_name(),
+    }
+
+
+@router.get("/api/prompts/{name}")
+async def get_prompt_endpoint(name: str, _=Depends(require_admin)):
+    """Get a single named prompt by name."""
+    from src.system_prompt import get_named_prompt
+
+    data = get_named_prompt(name)
+    if data is None:
+        return JSONResponse(status_code=404, content={"error": f"Prompt not found: {name}"})
+    return data
+
+
+@router.put("/api/prompts/{name}")
+async def save_prompt_endpoint(name: str, body: NamedPromptWrite, _=Depends(require_admin)):
+    """Create or update a named prompt."""
+    from src.system_prompt import save_named_prompt
+
+    try:
+        data = save_named_prompt(name, body.content)
+    except ValueError as e:
+        return JSONResponse(status_code=422, content={"error": str(e)})
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": f"Failed to save: {e}"})
+    return data
+
+
+@router.delete("/api/prompts/{name}")
+async def delete_prompt_endpoint(name: str, _=Depends(require_admin)):
+    """Delete a named prompt."""
+    from src.system_prompt import delete_named_prompt
+
+    try:
+        deleted = delete_named_prompt(name)
+    except ValueError as e:
+        return JSONResponse(status_code=422, content={"error": str(e)})
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": f"Failed to delete: {e}"})
+    if not deleted:
+        return JSONResponse(status_code=404, content={"error": f"Prompt not found: {name}"})
+    return {"status": "deleted", "name": name}
+
+
+@router.post("/api/prompts/{name}/activate")
+async def activate_prompt_endpoint(name: str, _=Depends(require_admin)):
+    """Activate a named prompt as the current system prompt."""
+    from src.system_prompt import activate_named_prompt, get_prompt_mode
+
+    try:
+        activate_named_prompt(name)
+    except ValueError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": f"Failed to activate: {e}"})
+    return {"status": "activated", "name": name, "mode": get_prompt_mode()}
 
 
 # ---------------------------------------------------------------------------

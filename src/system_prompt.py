@@ -27,13 +27,16 @@ _default_prompt_raw: Optional[str] = None  # loaded from file at startup (origin
 _runtime_prompt: Optional[str] = None  # admin override (resolved)
 _runtime_prompt_raw: Optional[str] = None  # admin override (original)
 _preset_text: Optional[str] = None  # cached preset reference text
+_active_prompt_name: Optional[str] = None  # name of the currently active named prompt
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _PERSIST_FILE = _DATA_DIR / "system_prompt.json"
+_PROMPTS_DIR = _DATA_DIR / "prompts"
 
 
 def _load_persisted() -> Optional[str]:
     """Load the persisted admin override from disk."""
+    global _active_prompt_name
     if not _PERSIST_FILE.is_file():
         return None
     try:
@@ -41,6 +44,7 @@ def _load_persisted() -> Optional[str]:
         if not isinstance(data, dict):
             logger.warning("Persisted system prompt has invalid structure, ignoring")
             return None
+        _active_prompt_name = data.get("active_name")
         value = data.get("prompt")
         if not isinstance(value, str) or not value.strip():
             logger.warning("Persisted system prompt has invalid value, ignoring")
@@ -51,19 +55,25 @@ def _load_persisted() -> Optional[str]:
         return None
 
 
-def _save_persisted(text: Optional[str]) -> None:
+def _save_persisted(text: Optional[str], *, active_name: Optional[str] = None) -> None:
     """Save or delete the persisted admin override.
 
     Raises ``OSError`` on failure so callers can avoid in-memory/disk divergence.
     """
+    global _active_prompt_name
     if text is None:
+        _active_prompt_name = None
         if _PERSIST_FILE.is_file():
             _PERSIST_FILE.unlink()
             logger.info("System prompt: persisted file removed")
     else:
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        payload: dict = {"prompt": text}
+        if active_name:
+            payload["active_name"] = active_name
+        _active_prompt_name = active_name
         _PERSIST_FILE.write_text(
-            json.dumps({"prompt": text}, ensure_ascii=False, indent=2),
+            json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         logger.info("System prompt: persisted to %s", _PERSIST_FILE)
@@ -153,7 +163,7 @@ def get_raw_system_prompt() -> Optional[str]:
     return _default_prompt_raw
 
 
-def set_system_prompt(text: str) -> None:
+def set_system_prompt(text: str, *, active_name: Optional[str] = None) -> None:
     """Set a runtime override for the system prompt and persist to disk.
 
     Raises ``ValueError`` if *text* is empty or whitespace-only.
@@ -163,12 +173,14 @@ def set_system_prompt(text: str) -> None:
     stripped = text.strip()
     if not stripped:
         raise ValueError("System prompt cannot be empty. Use reset to revert to default.")
-    _save_persisted(stripped)
+    _save_persisted(stripped, active_name=active_name)
     resolved = _resolve_placeholders(stripped)
     with _lock:
         _runtime_prompt_raw = stripped
         _runtime_prompt = resolved
-    logger.info("System prompt: runtime override set (%d chars)", len(stripped))
+    logger.info(
+        "System prompt: runtime override set (%d chars, name=%s)", len(stripped), active_name
+    )
 
 
 def reset_system_prompt() -> None:
@@ -201,7 +213,9 @@ def get_prompt_mode() -> str:
 
 def _load_preset_text() -> Optional[str]:
     """Load the claude_code preset reference from docs/, stripping the markdown header."""
-    ref_path = Path(__file__).resolve().parent.parent / "docs" / "claude-code-system-prompt-reference.md"
+    ref_path = (
+        Path(__file__).resolve().parent.parent / "docs" / "claude-code-system-prompt-reference.md"
+    )
     if not ref_path.is_file():
         return None
     raw = ref_path.read_text(encoding="utf-8")
@@ -216,3 +230,136 @@ def get_preset_text() -> Optional[str]:
     if _preset_text is None:
         _preset_text = _load_preset_text()
     return _preset_text
+
+
+def get_active_prompt_name() -> Optional[str]:
+    """Return the name of the currently active named prompt, or ``None``."""
+    return _active_prompt_name
+
+
+# ---------------------------------------------------------------------------
+# Named Prompts CRUD
+# ---------------------------------------------------------------------------
+
+_PROMPT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9 _-]{0,63}$")
+
+
+def _validate_prompt_name(name: str) -> str:
+    """Validate and return a sanitised prompt name.
+
+    Raises ``ValueError`` on invalid names.
+    """
+    stripped = name.strip()
+    if not stripped:
+        raise ValueError("Prompt name cannot be empty")
+    if not _PROMPT_NAME_RE.match(stripped):
+        raise ValueError(
+            "Prompt name must start with a letter/digit, "
+            "contain only letters, digits, spaces, hyphens, or underscores, "
+            "and be at most 64 characters"
+        )
+    return stripped
+
+
+def _prompt_path(name: str) -> Path:
+    """Return the file path for a named prompt."""
+    safe = name.replace(" ", "_")
+    return _PROMPTS_DIR / f"{safe}.json"
+
+
+def list_named_prompts() -> list:
+    """Return a list of all saved named prompts (metadata only)."""
+    if not _PROMPTS_DIR.is_dir():
+        return []
+    prompts = []
+    for f in sorted(_PROMPTS_DIR.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            prompts.append(
+                {
+                    "name": data.get("name", f.stem),
+                    "char_count": len(data.get("content", "")),
+                    "updated_at": data.get("updated_at"),
+                }
+            )
+        except (json.JSONDecodeError, OSError):
+            continue
+    return prompts
+
+
+def get_named_prompt(name: str) -> Optional[dict]:
+    """Load a single named prompt by name. Returns ``None`` if not found."""
+    name = _validate_prompt_name(name)
+    path = _prompt_path(name)
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to load named prompt %r: %s", name, e)
+        return None
+
+
+def save_named_prompt(name: str, content: str) -> dict:
+    """Create or update a named prompt. Returns the saved data dict.
+
+    Raises ``ValueError`` on invalid name or empty content.
+    Raises ``OSError`` on write failure.
+    """
+    from datetime import datetime, timezone
+
+    name = _validate_prompt_name(name)
+    content = content.strip()
+    if not content:
+        raise ValueError("Prompt content cannot be empty")
+
+    _PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _prompt_path(name)
+
+    existing = None
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    now = datetime.now(timezone.utc).isoformat()
+    data = {
+        "name": name,
+        "content": content,
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Named prompt saved: %s (%d chars)", name, len(content))
+    return data
+
+
+def delete_named_prompt(name: str) -> bool:
+    """Delete a named prompt by name. Returns ``True`` if deleted.
+
+    Raises ``ValueError`` on invalid name.
+    """
+    name = _validate_prompt_name(name)
+    path = _prompt_path(name)
+    if not path.is_file():
+        return False
+    path.unlink()
+    logger.info("Named prompt deleted: %s", name)
+
+    # If the deleted prompt was the active one, clear active_name
+    if _active_prompt_name == name:
+        reset_system_prompt()
+    return True
+
+
+def activate_named_prompt(name: str) -> None:
+    """Activate a named prompt as the current system prompt.
+
+    Raises ``ValueError`` if the prompt does not exist or has invalid name.
+    Raises ``OSError`` on persist failure.
+    """
+    data = get_named_prompt(name)
+    if data is None:
+        raise ValueError(f"Named prompt not found: {name}")
+    set_system_prompt(data["content"], active_name=data["name"])
