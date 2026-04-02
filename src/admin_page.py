@@ -663,6 +663,22 @@ details.config-section .config-body { padding: var(--gap-lg); }
   letter-spacing: 0.1em;
 }
 
+/* === Read-only Editor === */
+.readonly-editor {
+  width: 100%;
+  min-height: 350px;
+  max-height: 60vh;
+  font-family: var(--font);
+  font-size: 0.78rem;
+  background: var(--bg-surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  padding: 8px;
+  resize: vertical;
+  cursor: default;
+  border-radius: 0;
+}
+
 /* === Rate Bar === */
 .rate-bar-fill { transition: width 0.4s ease, background-color 0.4s ease; }
 
@@ -1176,7 +1192,7 @@ input[type="checkbox"] {
               <span class="text-xs text-muted" style="padding-left:12px">// LOCAL</span>
             </div>
             <template x-for="s in skills" :key="s.name">
-              <div class="file-item" :class="{ active: selectedSkill === s.name && !pluginSkillView }" @click="openSkill(s.name)">
+              <div class="file-item" :class="{ active: selectedSkill === s.name }" @click="openSkill(s.name)">
                 <span class="icon" style="color:var(--green)">&#9881;</span>
                 <div style="flex:1; min-width:0">
                   <div style="font-size:var(--fs-sm); font-weight:600; color:var(--text-bright)" x-text="s.name"></div>
@@ -1212,7 +1228,7 @@ input[type="checkbox"] {
                     <template x-for="sk in (p.skills || [])" :key="p.id + ':' + sk.name">
                       <div class="file-item" style="padding-left:28px"
                         :class="{ active: pluginSkillView && pluginSkillView.pluginId === p.id && pluginSkillView.skillName === sk.name }"
-                        @click="openPluginSkill(p.id, sk.name, p.name, p.version)">
+                        @click="openPluginSkill(p, sk.name)">
                         <span class="icon" style="color:var(--cyan)">&#9670;</span>
                         <div style="flex:1; min-width:0">
                           <div style="font-size:var(--fs-sm); color:var(--text)" x-text="sk.name"></div>
@@ -1281,13 +1297,10 @@ input[type="checkbox"] {
                     <span class="badge text-xs" style="border-color:var(--amber); color:var(--amber)">PLUGIN</span>
                     <span class="text-xs" style="color:var(--text-dim)" x-text="pluginSkillView.version ? 'v' + pluginSkillView.version : ''"></span>
                   </div>
-                  <span class="text-xs text-muted" x-text="(pluginSkillContent?.length || 0) + ' chars'"></span>
+                  <span class="text-xs text-muted" x-text="(pluginSkillView.content?.length || 0) + ' chars'"></span>
                 </div>
                 <p class="text-xs text-muted mb-sm">// read-only. managed by CLI plugin system.</p>
-                <textarea readonly :value="pluginSkillContent || ''"
-                  style="width:100%; min-height:350px; max-height:60vh; font-family:var(--font); font-size:0.78rem;
-                    background:var(--bg-surface); color:var(--text-dim); border:1px solid var(--border);
-                    padding:8px; resize:vertical; cursor:default; border-radius:0"></textarea>
+                <textarea readonly :value="pluginSkillView.content || ''" class="readonly-editor"></textarea>
               </div>
             </template>
           </div>
@@ -1541,10 +1554,7 @@ input[type="checkbox"] {
                   <span class="text-xs text-muted" x-text="(systemPrompt.preset_text?.length ?? 0) + ' chars'"></span>
                 </div>
                 <p class="text-xs text-muted mb-md">// built-in claude_code preset. read-only.</p>
-                <textarea readonly :value="systemPrompt.preset_text || ''"
-                  style="width:100%; min-height:350px; max-height:60vh; font-family:var(--font); font-size:0.78rem;
-                    background:var(--bg-surface); color:var(--text-dim); border:1px solid var(--border);
-                    padding:8px; resize:vertical; cursor:default; border-radius:0"></textarea>
+                <textarea readonly :value="systemPrompt.preset_text || ''" class="readonly-editor"></textarea>
                 <div class="flex-gap-sm" style="margin-top:0.75rem">
                   <button class="btn btn-sm btn-primary" @click="activatePreset()"
                     :disabled="systemPrompt.active_name == null && systemPrompt.mode !== 'custom'">[ACTIVATE]</button>
@@ -1564,10 +1574,7 @@ input[type="checkbox"] {
                   <span class="text-xs text-muted" x-text="(promptEditorContent?.length ?? 0) + ' chars'"></span>
                 </div>
                 <p class="text-xs text-muted mb-md">// template from docs/. save as named prompt to edit.</p>
-                <textarea readonly :value="promptEditorContent || ''"
-                  style="width:100%; min-height:350px; max-height:60vh; font-family:var(--font); font-size:0.78rem;
-                    background:var(--bg-surface); color:var(--text-dim); border:1px solid var(--border);
-                    padding:8px; resize:vertical; cursor:default; border-radius:0"></textarea>
+                <textarea readonly :value="promptEditorContent || ''" class="readonly-editor"></textarea>
                 <div class="flex-gap-sm" style="margin-top:0.75rem">
                   <button class="btn btn-sm btn-ghost" @click="forkFromTemplate()">[SAVE AS NEW]</button>
                 </div>
@@ -1767,7 +1774,6 @@ function adminApp() {
     newSkillNameError: '',
     plugins: [],
     pluginSkillView: null,
-    pluginSkillContent: '',
     toolsRegistry: {},
     sandboxConfig: {},
     systemPrompt: { mode: 'preset', prompt: null, resolved_prompt: null, preset_text: null, char_count: 0, active_name: null },
@@ -2191,7 +2197,8 @@ function adminApp() {
       if (r1?.ok) { const d = await r1.json(); this.skills = d.skills || []; }
       if (r2?.ok) {
         const d = await r2.json();
-        this.plugins = (d.plugins || []).map(p => ({ ...p, _expanded: false }));
+        const wasExpanded = new Set(this.plugins.filter(p => p._expanded).map(p => p.id));
+        this.plugins = (d.plugins || []).map(p => ({ ...p, _expanded: wasExpanded.has(p.id) }));
       }
     },
     async openSkill(name) {
@@ -2214,18 +2221,17 @@ function adminApp() {
         }
       } catch(e) { this.showToast('Connection error', 'err'); }
     },
-    async openPluginSkill(pluginId, skillName, pluginName, version) {
+    async openPluginSkill(plugin, skillName) {
       if (this.skillDirty && !confirm('Unsaved changes will be lost. Continue?')) return;
       this.selectedSkill = null;
       this.skillCreating = false;
       if (this.skillCm) { this.skillCm.toTextArea(); this.skillCm = null; }
-      this.pluginSkillView = { pluginId, skillName, pluginName, version };
-      this.pluginSkillContent = '';
+      this.pluginSkillView = { pluginId: plugin.id, skillName, pluginName: plugin.name, version: plugin.version, content: '' };
       try {
-        const r = await this.api('/admin/api/plugins/' + encodeURIComponent(pluginId) + '/skills/' + encodeURIComponent(skillName));
+        const r = await this.api('/admin/api/plugins/' + encodeURIComponent(plugin.id) + '/skills/' + encodeURIComponent(skillName));
         if (r.ok) {
           const d = await r.json();
-          this.pluginSkillContent = d.content || '';
+          this.pluginSkillView.content = d.content || '';
         } else {
           this.showToast('Failed to load plugin skill', 'err');
           this.pluginSkillView = null;
