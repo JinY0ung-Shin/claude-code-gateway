@@ -25,7 +25,7 @@ class TestAdminPage:
         r = admin_client.get("/admin")
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
-        assert "Claude Code Gateway Admin" in r.text
+        assert "CLAUDE CODE GATEWAY" in r.text
 
 
 class TestAdminAuth:
