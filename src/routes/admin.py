@@ -598,7 +598,7 @@ async def reset_system_prompt_endpoint(_=Depends(require_admin)):
 
 
 @router.get("/api/prompts")
-async def list_prompts_endpoint(_=Depends(require_admin)):
+def list_prompts_endpoint(_=Depends(require_admin)):
     """List all saved named prompts."""
     from src.system_prompt import get_active_prompt_name, list_named_prompts
 
@@ -609,7 +609,7 @@ async def list_prompts_endpoint(_=Depends(require_admin)):
 
 
 @router.get("/api/prompts/{name}")
-async def get_prompt_endpoint(name: str, _=Depends(require_admin)):
+def get_prompt_endpoint(name: str, _=Depends(require_admin)):
     """Get a single named prompt by name."""
     from src.system_prompt import get_named_prompt
 
@@ -623,7 +623,7 @@ async def get_prompt_endpoint(name: str, _=Depends(require_admin)):
 
 
 @router.put("/api/prompts/{name}")
-async def save_prompt_endpoint(name: str, body: NamedPromptWrite, _=Depends(require_admin)):
+def save_prompt_endpoint(name: str, body: NamedPromptWrite, _=Depends(require_admin)):
     """Create or update a named prompt."""
     from src.system_prompt import save_named_prompt
 
@@ -637,7 +637,7 @@ async def save_prompt_endpoint(name: str, body: NamedPromptWrite, _=Depends(requ
 
 
 @router.delete("/api/prompts/{name}")
-async def delete_prompt_endpoint(name: str, _=Depends(require_admin)):
+def delete_prompt_endpoint(name: str, _=Depends(require_admin)):
     """Delete a named prompt."""
     from src.system_prompt import delete_named_prompt
 
@@ -653,7 +653,7 @@ async def delete_prompt_endpoint(name: str, _=Depends(require_admin)):
 
 
 @router.post("/api/prompts/{name}/activate")
-async def activate_prompt_endpoint(name: str, _=Depends(require_admin)):
+def activate_prompt_endpoint(name: str, _=Depends(require_admin)):
     """Activate a named prompt as the current system prompt."""
     from src.system_prompt import activate_named_prompt, get_prompt_mode
 

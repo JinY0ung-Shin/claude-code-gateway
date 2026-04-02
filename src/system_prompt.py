@@ -15,9 +15,10 @@ import logging
 import os
 import platform
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ def _load_persisted() -> Optional[str]:
         if not isinstance(data, dict):
             logger.warning("Persisted system prompt has invalid structure, ignoring")
             return None
-        _active_prompt_name = data.get("active_name")
+        with _lock:
+            _active_prompt_name = data.get("active_name")
         value = data.get("prompt")
         if not isinstance(value, str) or not value.strip():
             logger.warning("Persisted system prompt has invalid value, ignoring")
@@ -62,7 +64,8 @@ def _save_persisted(text: Optional[str], *, active_name: Optional[str] = None) -
     """
     global _active_prompt_name
     if text is None:
-        _active_prompt_name = None
+        with _lock:
+            _active_prompt_name = None
         if _PERSIST_FILE.is_file():
             _PERSIST_FILE.unlink()
             logger.info("System prompt: persisted file removed")
@@ -71,7 +74,8 @@ def _save_persisted(text: Optional[str], *, active_name: Optional[str] = None) -
         payload: dict = {"prompt": text}
         if active_name:
             payload["active_name"] = active_name
-        _active_prompt_name = active_name
+        with _lock:
+            _active_prompt_name = active_name
         _PERSIST_FILE.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -234,14 +238,15 @@ def get_preset_text() -> Optional[str]:
 
 def get_active_prompt_name() -> Optional[str]:
     """Return the name of the currently active named prompt, or ``None``."""
-    return _active_prompt_name
+    with _lock:
+        return _active_prompt_name
 
 
 # ---------------------------------------------------------------------------
 # Named Prompts CRUD
 # ---------------------------------------------------------------------------
 
-_PROMPT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9 _-]{0,63}$")
+_PROMPT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 
 def _validate_prompt_name(name: str) -> str:
@@ -255,7 +260,7 @@ def _validate_prompt_name(name: str) -> str:
     if not _PROMPT_NAME_RE.match(stripped):
         raise ValueError(
             "Prompt name must start with a letter/digit, "
-            "contain only letters, digits, spaces, hyphens, or underscores, "
+            "contain only letters, digits, hyphens, or underscores, "
             "and be at most 64 characters"
         )
     return stripped
@@ -263,11 +268,10 @@ def _validate_prompt_name(name: str) -> str:
 
 def _prompt_path(name: str) -> Path:
     """Return the file path for a named prompt."""
-    safe = name.replace(" ", "_")
-    return _PROMPTS_DIR / f"{safe}.json"
+    return _PROMPTS_DIR / f"{name}.json"
 
 
-def list_named_prompts() -> list:
+def list_named_prompts() -> list[dict[str, Any]]:
     """Return a list of all saved named prompts (metadata only)."""
     if not _PROMPTS_DIR.is_dir():
         return []
@@ -306,8 +310,6 @@ def save_named_prompt(name: str, content: str) -> dict:
     Raises ``ValueError`` on invalid name or empty content.
     Raises ``OSError`` on write failure.
     """
-    from datetime import datetime, timezone
-
     name = _validate_prompt_name(name)
     content = content.strip()
     if not content:
@@ -347,8 +349,9 @@ def delete_named_prompt(name: str) -> bool:
     path.unlink()
     logger.info("Named prompt deleted: %s", name)
 
-    # If the deleted prompt was the active one, clear active_name
-    if _active_prompt_name == name:
+    with _lock:
+        active = _active_prompt_name
+    if active == name:
         reset_system_prompt()
     return True
 

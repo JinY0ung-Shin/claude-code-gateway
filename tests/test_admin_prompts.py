@@ -26,7 +26,6 @@ class TestValidatePromptName:
     def test_valid_names(self):
         assert _validate_prompt_name("my-prompt") == "my-prompt"
         assert _validate_prompt_name("test_v2") == "test_v2"
-        assert _validate_prompt_name("Prompt 1") == "Prompt 1"
         assert _validate_prompt_name("a") == "a"
 
     def test_empty_name(self):

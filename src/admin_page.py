@@ -1692,7 +1692,6 @@ function adminApp() {
     promptView: null,
     promptViewName: null,
     promptEditorContent: '',
-    promptOriginalContent: '',
     promptDirty: false,
     newPromptName: '',
     newPromptNameError: '',
@@ -1937,26 +1936,15 @@ function adminApp() {
     },
 
     async loadSystemPrompt() {
-      try {
-        const r = await this.api('/admin/api/system-prompt');
-        if (r.ok) { this.systemPrompt = await r.json(); }
-      } catch(e) {}
-      try {
-        const r = await this.api('/admin/api/system-prompt/templates');
-        if (r.ok) { this.promptTemplates = (await r.json()).templates || []; }
-      } catch(e) {}
-      await this.loadNamedPrompts();
+      const [r1, r2, r3] = await Promise.all([
+        this.api('/admin/api/system-prompt').catch(() => null),
+        this.api('/admin/api/system-prompt/templates').catch(() => null),
+        this.api('/admin/api/prompts').catch(() => null),
+      ]);
+      if (r1?.ok) { this.systemPrompt = await r1.json(); }
+      if (r2?.ok) { this.promptTemplates = (await r2.json()).templates || []; }
+      if (r3?.ok) { const d = await r3.json(); this.namedPrompts = d.prompts || []; }
     },
-    async loadNamedPrompts() {
-      try {
-        const r = await this.api('/admin/api/prompts');
-        if (r.ok) {
-          const d = await r.json();
-          this.namedPrompts = d.prompts || [];
-        }
-      } catch(e) {}
-    },
-
     // --- Prompt sidebar selection ---
     selectPresetPrompt() {
       if (this.promptDirty && !confirm('Unsaved changes will be lost. Continue?')) return;
@@ -1981,7 +1969,6 @@ function adminApp() {
           this.promptView = 'named';
           this.promptViewName = d.name;
           this.promptEditorContent = d.content;
-          this.promptOriginalContent = d.content;
           this.promptDirty = false;
         } else {
           const d = await r.json();
@@ -2002,17 +1989,12 @@ function adminApp() {
     validateNewPromptName() {
       const n = this.newPromptName.trim();
       if (!n) { this.newPromptNameError = ''; return; }
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/.test(n)) {
-        this.newPromptNameError = 'letters, digits, spaces, hyphens, underscores only (start with letter/digit)';
-        return;
-      }
-      if (n.length > 64) {
-        this.newPromptNameError = 'max 64 characters';
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(n)) {
+        this.newPromptNameError = 'letters, digits, hyphens, underscores only (max 64 chars)';
         return;
       }
       if (this.namedPrompts.some(p => p.name === n)) {
         this.newPromptNameError = 'prompt already exists (will overwrite on create)';
-        // Allow overwrite — just warn, don't block
       } else {
         this.newPromptNameError = '';
       }
@@ -2029,9 +2011,13 @@ function adminApp() {
           body: JSON.stringify({ content })
         });
         if (r.ok) {
+          const d = await r.json();
           this.showToast('PROMPT CREATED: ' + name, 'ok');
-          await this.loadNamedPrompts();
-          await this.selectNamedPrompt(name);
+          await this.loadSystemPrompt();
+          this.promptView = 'named';
+          this.promptViewName = d.name;
+          this.promptEditorContent = d.content;
+          this.promptDirty = false;
         } else {
           const d = await r.json();
           this.showToast(d.error || 'Create failed', 'err');
@@ -2046,14 +2032,13 @@ function adminApp() {
           body: JSON.stringify({ content: this.promptEditorContent.trim() })
         });
         if (r.ok) {
-          this.promptOriginalContent = this.promptEditorContent.trim();
           this.promptDirty = false;
           this.showToast('PROMPT SAVED', 'ok');
-          await this.loadNamedPrompts();
-          // If this was the active prompt, re-activate to pick up changes
-          if (this.systemPrompt.active_name === this.promptViewName) {
-            await this.activateNamedPrompt();
+          const wasActive = this.systemPrompt.active_name === this.promptViewName;
+          if (wasActive) {
+            await this.api('/admin/api/prompts/' + encodeURIComponent(this.promptViewName) + '/activate', { method: 'POST' });
           }
+          await this.loadSystemPrompt();
         } else {
           const d = await r.json();
           this.showToast(d.error || 'Save failed', 'err');
@@ -2070,7 +2055,6 @@ function adminApp() {
           this.promptView = null;
           this.promptViewName = null;
           this.promptDirty = false;
-          await this.loadNamedPrompts();
           await this.loadSystemPrompt();
         } else {
           const d = await r.json();
