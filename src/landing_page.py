@@ -5,669 +5,775 @@ def build_root_page(version: str, auth_info: Dict[str, Any], default_port: int) 
     """Build the landing page HTML."""
     auth_method = auth_info.get("method", "unknown")
     auth_valid = auth_info.get("status", {}).get("valid", False)
-    status_color = "#22c55e" if auth_valid else "#ef4444"
-    status_text = "Connected" if auth_valid else "Not Connected"
+    status_text = "ONLINE" if auth_valid else "OFFLINE"
+    status_class = "online" if auth_valid else "offline"
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="en" data-theme="dark">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta name="color-scheme" content="light dark">
-        <title>Claude Code Gateway</title>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-        <style>
-            :root {{
-                --pico-font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                --accent-color: #16a34a;
-            }}
-            /* Light mode colors */
-            [data-theme="light"] {{
-                --card-bg: #ffffff;
-                --subtle-bg: #f1f5f9;
-                --border-color: #e2e8f0;
-                --page-bg: #f8fafc;
-            }}
-            /* Dark mode colors */
-            [data-theme="dark"] {{
-                --card-bg: #1e293b;
-                --subtle-bg: #334155;
-                --border-color: #475569;
-                --page-bg: #0f172a;
-            }}
-            /* Page background */
-            body {{ background: var(--page-bg); }}
-            /* GLOBAL FIX: Remove Pico's default code styling everywhere */
-            code:not(pre code) {{
-                background: transparent !important;
-                padding: 0 !important;
-                border-radius: 0 !important;
-                color: inherit !important;
-            }}
-            /* Only style code green where we explicitly want it */
-            .green-code {{ color: var(--accent-color) !important; }}
-            /* Constrain page width - wider for modern screens */
-            .container {{
-                max-width: 1100px;
-                margin: 0 auto;
-                padding: 1.5rem 2rem;
-            }}
-            /* Override Pico article styling */
-            article {{
-                background: var(--card-bg);
-                border: 1px solid var(--border-color);
-                border-radius: 0.75rem;
-                margin-bottom: 1rem;
-                padding: 1rem 1.25rem;
-            }}
-            article header {{
-                padding: 0;
-                margin-bottom: 0.75rem;
-                background: transparent;
-                border: none;
-            }}
-            /* Section headers with icons - matches status-flex layout */
-            .section-header {{
-                display: flex;
-                align-items: center;
-                gap: 0.5rem;
-                margin-bottom: 0.75rem;
-            }}
-            .section-icon {{
-                width: 1rem;
-                height: 1rem;
-                color: var(--accent-color);
-                flex-shrink: 0;
-            }}
-            /* Status indicator */
-            .status-dot {{
-                width: 0.75rem;
-                height: 0.75rem;
-                border-radius: 50%;
-                display: inline-block;
-                animation: pulse 2s infinite;
-            }}
-            @keyframes pulse {{
-                0%, 100% {{ opacity: 1; }}
-                50% {{ opacity: 0.5; }}
-            }}
-            /* Method badges */
-            .badge {{
-                display: inline-block;
-                padding: 0.25rem 0.5rem;
-                font-size: 0.7rem;
-                font-weight: 700;
-                border-radius: 0.25rem;
-                text-transform: uppercase;
-            }}
-            .badge-post {{ background: rgba(34, 197, 94, 0.15); color: #16a34a; }}
-            .badge-get {{ background: rgba(59, 130, 246, 0.15); color: #2563eb; }}
-            .badge-delete {{ background: rgba(239, 68, 68, 0.15); color: #ef4444; }}
-            /* Header layout */
-            .header-flex {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 1rem;
-                margin-bottom: 1rem;
-            }}
-            .header-left {{
-                display: flex;
-                align-items: center;
-                gap: 1rem;
-                flex-shrink: 0;
-            }}
-            .header-right {{
-                display: flex;
-                align-items: center;
-                gap: 0.75rem;
-                flex-shrink: 0;
-            }}
-            .icon-btn {{
-                padding: 0.5rem;
-                border-radius: 0.5rem;
-                background: var(--subtle-bg);
-                border: 1px solid var(--border-color);
-                cursor: pointer;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                color: inherit;
-            }}
-            .icon-btn:hover {{ opacity: 0.8; }}
-            .icon-btn svg {{ width: 1.25rem; height: 1.25rem; }}
-            .version-badge {{
-                padding: 0.25rem 0.75rem;
-                background: var(--subtle-bg);
-                border: 1px solid var(--border-color);
-                border-radius: 0.5rem;
-                font-family: monospace;
-                font-size: 0.875rem;
-            }}
-            /* Logo container */
-            .logo-container {{
-                background: linear-gradient(135deg, #22c55e 0%, #0ea5e9 100%);
-                padding: 2px;
-                border-radius: 0.75rem;
-            }}
-            .logo-inner {{
-                background: var(--card-bg);
-                border-radius: calc(0.75rem - 2px);
-                padding: 0.75rem;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }}
-            .logo-inner svg {{ width: 2rem; height: 2rem; color: #22c55e; }}
-            /* Endpoint list */
-            .endpoint-item {{
-                display: flex;
-                align-items: center;
-                gap: 0.75rem;
-                padding: 0.5rem 0;
-                border-bottom: 1px solid var(--pico-muted-border-color);
-            }}
-            .endpoint-item:last-child {{ border-bottom: none; }}
-            .endpoint-item code {{ flex: 1; }}
-            .endpoint-desc {{ color: var(--pico-muted-color); font-size: 0.85rem; }}
-            /* Endpoint group label */
-            .endpoint-group {{
-                font-size: 0.75rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-                color: var(--pico-muted-color);
-                padding: 0.75rem 0 0.25rem;
-                border-bottom: none;
-            }}
-            .endpoint-group:first-child {{ padding-top: 0; }}
-            /* Details accordion styling */
-            details {{
-                border: 1px solid var(--border-color);
-                border-radius: 0.5rem;
-                margin-bottom: 0.4rem;
-                background: var(--subtle-bg);
-            }}
-            details summary {{
-                padding: 0.5rem 0.75rem;
-                display: flex;
-                align-items: center;
-                gap: 0.75rem;
-                cursor: pointer;
-                list-style: none;
-            }}
-            details summary::-webkit-details-marker {{ display: none; }}
-            details summary::after {{
-                content: "";
-                margin-left: auto;
-                width: 0.5rem;
-                height: 0.5rem;
-                border-right: 2px solid currentColor;
-                border-bottom: 2px solid currentColor;
-                transform: rotate(-45deg);
-                transition: transform 0.2s;
-            }}
-            details[open] summary::after {{ transform: rotate(45deg); }}
-            details .content {{ padding: 0 1rem 1rem; }}
-            details .content pre {{
-                margin: 0;
-                font-size: 0.875rem;
-                overflow-x: auto;
-            }}
-            /* Config grid */
-            .config-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-                gap: 0.75rem;
-            }}
-            .config-item {{
-                padding: 0.75rem;
-                background: var(--subtle-bg);
-                border: 1px solid var(--border-color);
-                border-radius: 0.5rem;
-            }}
-            .config-item code {{ font-weight: 600; }}
-            .config-item p {{ margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--pico-muted-color); }}
-            /* Footer */
-            footer nav {{
-                display: flex;
-                justify-content: center;
-                gap: 2rem;
-                flex-wrap: wrap;
-            }}
-            footer a {{
-                display: flex;
-                align-items: center;
-                gap: 0.5rem;
-            }}
-            footer svg {{ width: 1rem; height: 1rem; }}
-            /* Quick start */
-            .quickstart-wrapper {{ position: relative; }}
-            .copy-btn {{
-                position: absolute;
-                top: 0.5rem;
-                right: 0.5rem;
-                padding: 0.5rem;
-                background: var(--subtle-bg);
-                border: 1px solid var(--border-color);
-                border-radius: 0.5rem;
-                cursor: pointer;
-                z-index: 1;
-                color: inherit;
-            }}
-            .copy-btn:hover {{ opacity: 0.8; }}
-            .copy-btn svg {{ width: 1rem; height: 1rem; }}
-            .hidden {{ display: none !important; }}
-            /* Shiki code styling */
-            .shiki {{ padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }}
-            .shiki code {{ white-space: pre-wrap; word-break: break-word; }}
-            /* Status card layout */
-            .status-flex {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                flex-wrap: wrap;
-                gap: 1rem;
-            }}
-            .status-left {{
-                display: flex;
-                align-items: center;
-                gap: 0.75rem;
-            }}
-            .auth-badge {{
-                padding: 0.25rem 0.75rem;
-                background: var(--subtle-bg);
-                border: 1px solid var(--border-color);
-                border-radius: 1rem;
-                font-size: 0.875rem;
-            }}
-        </style>
-        <script type="module">
-            import {{ codeToHtml }} from 'https://esm.sh/shiki@3.0.0';
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Gateway</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ================================================================
+   TERMINAL DESIGN SYSTEM — Landing Page
+   Mirrors the admin panel phosphor/CRT aesthetic
+   ================================================================ */
 
-            const lightTheme = 'github-light';
-            const darkTheme = 'github-dark';
+:root {{
+  --green: #00ff41;
+  --green-dim: #00cc33;
+  --green-muted: #00802080;
+  --green-subtle: #00ff4112;
+  --green-glow: 0 0 10px #00ff4140, 0 0 40px #00ff4110;
+  --amber: #ffb000;
+  --amber-dim: #cc8800;
+  --amber-subtle: #ffb00015;
+  --cyan: #00e5ff;
+  --cyan-dim: #00b8cc;
+  --cyan-subtle: #00e5ff12;
+  --red: #ff0033;
+  --red-dim: #cc0029;
+  --red-subtle: #ff003315;
 
-            function isDark() {{
-                return document.documentElement.getAttribute('data-theme') === 'dark';
-            }}
+  --bg-deep: #050505;
+  --bg: #0a0a0a;
+  --bg-raised: #111111;
+  --bg-surface: #161616;
+  --bg-hover: #1a1a1a;
+  --border: #1e1e1e;
+  --border-bright: #2a2a2a;
 
-            async function highlightJson(json, targetId) {{
-                const code = typeof json === 'string' ? json : JSON.stringify(json, null, 2);
-                const theme = isDark() ? darkTheme : lightTheme;
-                try {{
-                    const html = await codeToHtml(code, {{ lang: 'json', theme }});
-                    document.getElementById(targetId).innerHTML = html;
-                }} catch (e) {{
-                    document.getElementById(targetId).innerHTML = '<pre style="color:red;">Error: ' + e.message + '</pre>';
-                }}
-            }}
+  --text: #b0ffb0;
+  --text-bright: #00ff41;
+  --text-dim: #4a7a4a;
+  --text-muted: #3a5a3a;
 
-            // Lazy load data when details opens
-            document.querySelectorAll('details[data-endpoint]').forEach(details => {{
-                details.addEventListener('toggle', async () => {{
-                    if (details.open) {{
-                        const id = details.id;
-                        const endpoint = details.dataset.endpoint;
-                        const dataContainer = document.getElementById('data-' + id);
-                        const loader = document.getElementById('loader-' + id);
-                        if (dataContainer.innerHTML === '' || dataContainer.dataset.theme !== (isDark() ? 'dark' : 'light')) {{
-                            loader.classList.remove('hidden');
-                            try {{
-                                const response = await fetch(endpoint);
-                                const json = await response.json();
-                                await highlightJson(json, 'data-' + id);
-                                dataContainer.dataset.theme = isDark() ? 'dark' : 'light';
-                            }} catch (e) {{
-                                dataContainer.innerHTML = '<span style="color:red;">Error: ' + e.message + '</span>';
-                            }}
-                            loader.classList.add('hidden');
-                        }}
-                    }}
-                }});
-            }});
+  --font: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', monospace;
+  --fs-xs: 0.7rem;
+  --fs-sm: 0.78rem;
+  --fs-base: 0.85rem;
+  --fs-lg: 1rem;
+  --fs-xl: 1.2rem;
+}}
 
-            // Re-highlight on theme change
-            window.addEventListener('themeChanged', async () => {{
-                await highlightQuickstart();
-                document.querySelectorAll('details[open][data-endpoint]').forEach(async details => {{
-                    const id = details.id;
-                    const endpoint = details.dataset.endpoint;
-                    const dataContainer = document.getElementById('data-' + id);
-                    if (dataContainer && dataContainer.innerHTML) {{
+*, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+body {{
+  background: var(--bg-deep);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}}
+
+/* CRT Scanline Overlay */
+body::before {{
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.08) 2px,
+    rgba(0, 0, 0, 0.08) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}}
+
+/* Grid Background */
+body::after {{
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--green-muted) 1px, transparent 1px),
+    linear-gradient(90deg, var(--green-muted) 1px, transparent 1px);
+  background-size: 60px 60px;
+  opacity: 0.04;
+  pointer-events: none;
+  z-index: -1;
+}}
+
+.container {{ max-width: 960px; margin: 0 auto; padding: 1.5rem; }}
+
+a {{ color: var(--green-dim); text-decoration: none; transition: color 0.15s, text-shadow 0.15s; }}
+a:hover {{ color: var(--green); text-shadow: 0 0 6px var(--green-muted); }}
+
+/* === ASCII Header === */
+.ascii-header {{
+  font-size: var(--fs-xs);
+  color: var(--green-dim);
+  text-align: center;
+  line-height: 1.15;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--fs-sm);
+  text-shadow: 0 0 8px var(--green-muted);
+  white-space: pre;
+  overflow: hidden;
+}}
+
+.header-bar {{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border-bright);
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}}
+.header-bar .left {{
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}}
+.header-bar .right {{
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}}
+.version-tag {{
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  border: 1px solid var(--border-bright);
+  padding: 2px 8px;
+}}
+.github-link {{
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s;
+}}
+.github-link:hover {{
+  color: var(--green);
+  border-color: var(--green-dim);
+}}
+.github-link svg {{ width: 14px; height: 14px; }}
+
+/* Status */
+.status-indicator {{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+}}
+.status-dot {{
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}}
+.status-dot.online {{
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green-muted);
+  animation: pulse-glow 2s ease-in-out infinite;
+}}
+.status-dot.offline {{
+  background: var(--red);
+  box-shadow: 0 0 8px var(--red-subtle);
+  animation: pulse-glow 2s ease-in-out infinite;
+}}
+.status-label.online {{ color: var(--green); text-shadow: 0 0 6px var(--green-muted); }}
+.status-label.offline {{ color: var(--red); }}
+
+@keyframes pulse-glow {{
+  0%, 100% {{ opacity: 1; }}
+  50% {{ opacity: 0.5; }}
+}}
+
+/* Auth badge */
+.auth-badge {{
+  font-size: var(--fs-xs);
+  color: var(--cyan);
+  border: 1px solid var(--cyan-dim);
+  padding: 1px 8px;
+  background: var(--cyan-subtle);
+}}
+
+/* === Cards === */
+.card {{
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  position: relative;
+}}
+.card::before {{
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--green-dim), transparent);
+  opacity: 0.4;
+}}
+.card-title {{
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 500;
+  margin-bottom: 0.75rem;
+}}
+.card-title::before {{
+  content: '// ';
+  color: var(--text-muted);
+}}
+
+/* === Quick Start === */
+.quickstart-wrapper {{
+  position: relative;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 1rem;
+  overflow-x: auto;
+}}
+.quickstart-wrapper pre {{
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+}}
+.copy-btn {{
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 4px 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-bright);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  transition: all 0.15s;
+}}
+.copy-btn:hover {{
+  color: var(--green);
+  border-color: var(--green-dim);
+  text-shadow: 0 0 4px var(--green-muted);
+}}
+.copy-btn.copied {{
+  color: var(--green);
+  border-color: var(--green-dim);
+}}
+
+/* === Endpoint List === */
+.endpoint-group-label {{
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+  padding: 0.75rem 0 0.35rem;
+}}
+.endpoint-group-label:first-child {{ padding-top: 0; }}
+
+.endpoint-row {{
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}}
+.endpoint-row:last-child {{ border-bottom: none; }}
+
+.badge {{
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  font-family: var(--font);
+  letter-spacing: 0.05em;
+  border: 1px solid;
+  flex-shrink: 0;
+  min-width: 44px;
+  text-align: center;
+}}
+.badge-post {{
+  background: var(--green-subtle);
+  color: var(--green);
+  border-color: var(--green-dim);
+  text-shadow: 0 0 4px var(--green-muted);
+}}
+.badge-get {{
+  background: var(--cyan-subtle);
+  color: var(--cyan);
+  border-color: var(--cyan-dim);
+}}
+.badge-del {{
+  background: var(--red-subtle);
+  color: var(--red);
+  border-color: var(--red-dim);
+}}
+
+.endpoint-path {{
+  color: var(--text);
+  font-family: var(--font);
+  flex: 1;
+}}
+.endpoint-desc {{
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  flex-shrink: 0;
+}}
+
+/* === Expandable Details === */
+details {{
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  margin-bottom: 2px;
+}}
+details summary {{
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.75rem;
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--fs-sm);
+  transition: background 0.1s;
+}}
+details summary::-webkit-details-marker {{ display: none; }}
+details summary::after {{
+  content: '>';
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  transition: transform 0.15s;
+}}
+details[open] summary::after {{
+  transform: rotate(90deg);
+  color: var(--green-dim);
+}}
+details[open] summary {{
+  border-bottom: 1px solid var(--border);
+}}
+details summary:hover {{
+  background: var(--bg-hover);
+}}
+details .detail-body {{
+  padding: 0.75rem;
+  font-size: var(--fs-sm);
+}}
+details .detail-body pre {{
+  margin: 0;
+  overflow-x: auto;
+}}
+
+/* === Config Grid === */
+.config-grid {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+}}
+.config-item {{
+  padding: 0.75rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}}
+.config-item .val {{
+  color: var(--green);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  text-shadow: 0 0 4px var(--green-muted);
+}}
+.config-item .label {{
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-top: 2px;
+}}
+
+/* === Footer === */
+footer {{
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  margin-top: 1rem;
+}}
+footer nav {{
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+}}
+footer a {{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 4px 0;
+  border-bottom: 1px solid transparent;
+  transition: all 0.15s;
+}}
+footer a:hover {{
+  color: var(--green);
+  border-bottom-color: var(--green-dim);
+  text-shadow: 0 0 4px var(--green-muted);
+}}
+footer a::before {{
+  content: '>';
+  color: var(--text-muted);
+  transition: color 0.15s;
+}}
+footer a:hover::before {{
+  color: var(--green-dim);
+}}
+footer .copyright {{
+  text-align: center;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 0.75rem;
+}}
+
+/* === Loading spinner === */
+.loader {{
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}}
+.loader::after {{
+  content: '';
+  animation: dots 1.2s steps(4, end) infinite;
+}}
+@keyframes dots {{
+  0% {{ content: ''; }}
+  25% {{ content: '.'; }}
+  50% {{ content: '..'; }}
+  75% {{ content: '...'; }}
+}}
+
+.hidden {{ display: none !important; }}
+
+/* Shiki overrides */
+.shiki {{
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  overflow-x: auto;
+}}
+.shiki code {{
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font);
+  font-size: var(--fs-sm);
+}}
+
+/* Responsive */
+@media (max-width: 640px) {{
+  .container {{ padding: 1rem; }}
+  .ascii-header {{ font-size: 0.45rem; }}
+  .endpoint-desc {{ display: none; }}
+  .config-grid {{ grid-template-columns: 1fr 1fr; }}
+}}
+</style>
+<script type="module">
+    import {{ codeToHtml }} from 'https://esm.sh/shiki@3.0.0';
+
+    const theme = 'vitesse-dark';
+
+    async function highlightJson(json, targetId) {{
+        const code = typeof json === 'string' ? json : JSON.stringify(json, null, 2);
+        try {{
+            const html = await codeToHtml(code, {{ lang: 'json', theme }});
+            document.getElementById(targetId).innerHTML = html;
+        }} catch (e) {{
+            document.getElementById(targetId).innerHTML = '<pre style="color:var(--red);">ERR: ' + e.message + '</pre>';
+        }}
+    }}
+
+    document.querySelectorAll('details[data-endpoint]').forEach(details => {{
+        details.addEventListener('toggle', async () => {{
+            if (details.open) {{
+                const id = details.id;
+                const endpoint = details.dataset.endpoint;
+                const dataContainer = document.getElementById('data-' + id);
+                const loader = document.getElementById('loader-' + id);
+                if (!dataContainer.innerHTML) {{
+                    loader.classList.remove('hidden');
+                    try {{
                         const response = await fetch(endpoint);
                         const json = await response.json();
                         await highlightJson(json, 'data-' + id);
-                        dataContainer.dataset.theme = isDark() ? 'dark' : 'light';
+                    }} catch (e) {{
+                        dataContainer.innerHTML = '<span style="color:var(--red);">ERR: ' + e.message + '</span>';
                     }}
-                }});
-            }});
+                    loader.classList.add('hidden');
+                }}
+            }}
+        }});
+    }});
 
-            const quickstartCode = `curl -X POST http://localhost:{default_port}/v1/chat/completions \\\\
+    const quickstartCode = `curl -X POST http://localhost:{default_port}/v1/chat/completions \\\\
   -H "Content-Type: application/json" \\\\
   -d '{{"model": "sonnet", "messages": [{{"role": "user", "content": "Hello!"}}]}}'`;
 
-            async function highlightQuickstart() {{
-                const theme = isDark() ? darkTheme : lightTheme;
-                try {{
-                    const html = await codeToHtml(quickstartCode, {{ lang: 'bash', theme }});
-                    document.getElementById('quickstart-code').innerHTML = html;
-                }} catch (e) {{
-                    document.getElementById('quickstart-code').innerHTML = '<pre>' + quickstartCode + '</pre>';
-                }}
-            }}
+    async function highlightQuickstart() {{
+        try {{
+            const html = await codeToHtml(quickstartCode, {{ lang: 'bash', theme }});
+            document.getElementById('quickstart-code').innerHTML = html;
+        }} catch (e) {{
+            document.getElementById('quickstart-code').textContent = quickstartCode;
+        }}
+    }}
 
-            window.highlightQuickstart = highlightQuickstart;
-            highlightQuickstart();
-        </script>
-        <script>
-            const quickstartText = 'curl -X POST http://localhost:{default_port}/v1/chat/completions -H "Content-Type: application/json" -d \\'{{"model": "sonnet", "messages": [{{"role": "user", "content": "Hello!"}}]}}\\'';
+    highlightQuickstart();
+</script>
+<script>
+    const quickstartText = 'curl -X POST http://localhost:{default_port}/v1/chat/completions -H "Content-Type: application/json" -d \\'{{"model": "sonnet", "messages": [{{"role": "user", "content": "Hello!"}}]}}\\'';
 
-            function copyQuickstart() {{
-                if (navigator.clipboard && navigator.clipboard.writeText) {{
-                    navigator.clipboard.writeText(quickstartText).then(showCopySuccess).catch(fallbackCopy);
-                }} else {{
-                    fallbackCopy();
-                }}
-            }}
+    function copyQuickstart() {{
+        const btn = document.getElementById('copy-btn');
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+            navigator.clipboard.writeText(quickstartText).then(() => showCopied(btn)).catch(() => fallbackCopy(btn));
+        }} else {{
+            fallbackCopy(btn);
+        }}
+    }}
 
-            function fallbackCopy() {{
-                const textarea = document.createElement('textarea');
-                textarea.value = quickstartText;
-                textarea.style.position = 'fixed';
-                textarea.style.opacity = '0';
-                document.body.appendChild(textarea);
-                textarea.select();
-                try {{ document.execCommand('copy'); showCopySuccess(); }} catch (e) {{ console.error('Copy failed:', e); }}
-                document.body.removeChild(textarea);
-            }}
+    function fallbackCopy(btn) {{
+        const ta = document.createElement('textarea');
+        ta.value = quickstartText;
+        ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {{ document.execCommand('copy'); showCopied(btn); }} catch (e) {{}}
+        document.body.removeChild(ta);
+    }}
 
-            function showCopySuccess() {{
-                const copyIcon = document.getElementById('copy-icon');
-                const checkIcon = document.getElementById('check-icon');
-                copyIcon.classList.add('hidden');
-                checkIcon.classList.remove('hidden');
-                setTimeout(() => {{
-                    copyIcon.classList.remove('hidden');
-                    checkIcon.classList.add('hidden');
-                }}, 2000);
-            }}
+    function showCopied(btn) {{
+        const orig = btn.textContent;
+        btn.textContent = 'COPIED';
+        btn.classList.add('copied');
+        setTimeout(() => {{ btn.textContent = orig; btn.classList.remove('copied'); }}, 2000);
+    }}
+</script>
+</head>
+<body>
+<main class="container">
 
-            function toggleTheme() {{
-                const html = document.documentElement;
-                const current = html.getAttribute('data-theme');
-                const next = current === 'dark' ? 'light' : 'dark';
-                html.setAttribute('data-theme', next);
-                localStorage.setItem('theme', next);
-                updateThemeIcon(next === 'dark');
-                window.dispatchEvent(new Event('themeChanged'));
-            }}
+    <!-- ASCII Art Header -->
+    <div class="ascii-header" aria-hidden="true">
+ ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗     ██████╗  █████╗ ████████╗███████╗██╗    ██╗ █████╗ ██╗   ██╗
+██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝    ██╔════╝ ██╔══██╗╚══██╔══╝██╔════╝██║    ██║██╔══██╗╚██╗ ██╔╝
+██║     ██║     ███████║██║   ██║██║  ██║█████╗      ██║  ███╗███████║   ██║   █████╗  ██║ █╗ ██║███████║ ╚████╔╝
+██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝      ██║   ██║██╔══██║   ██║   ██╔══╝  ██║███╗██║██╔══██║  ╚██╔╝
+╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗    ╚██████╔╝██║  ██║   ██║   ███████╗╚███╔███╔╝██║  ██║   ██║
+ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝   ╚═╝
+    </div>
 
-            function updateThemeIcon(isDark) {{
-                document.getElementById('sun-icon').classList.toggle('hidden', isDark);
-                document.getElementById('moon-icon').classList.toggle('hidden', !isDark);
-            }}
+    <!-- Header Bar -->
+    <div class="header-bar">
+        <div class="left">
+            <span class="status-indicator">
+                <span class="status-dot {status_class}"></span>
+                <span class="status-label {status_class}">{status_text}</span>
+            </span>
+            <span class="auth-badge">AUTH: {auth_method}</span>
+        </div>
+        <div class="right">
+            <span class="version-tag">v{version}</span>
+            <a href="https://github.com/JinY0ung-Shin/claude-code-gateway" target="_blank" rel="noopener noreferrer" class="github-link" title="GitHub">
+                <svg fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/></svg>
+                GITHUB
+            </a>
+        </div>
+    </div>
 
-            document.addEventListener('DOMContentLoaded', () => {{
-                const saved = localStorage.getItem('theme');
-                if (saved) {{
-                    document.documentElement.setAttribute('data-theme', saved);
-                    updateThemeIcon(saved === 'dark');
-                }} else {{
-                    updateThemeIcon(true);
-                }}
-            }});
-        </script>
-    </head>
-    <body>
-        <main class="container">
-            <!-- Header -->
-            <header class="header-flex">
-                <div class="header-left">
-                    <div class="logo-container">
-                        <div class="logo-inner">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                            </svg>
-                        </div>
-                    </div>
-                    <div>
-                        <h1 style="margin:0;">Claude Code Gateway</h1>
-                        <p style="margin:0;color:var(--pico-muted-color);">API gateway for Claude Code</p>
-                    </div>
-                </div>
-                <div class="header-right">
-                    <span class="version-badge">v{version}</span>
-                    <button onclick="toggleTheme()" class="icon-btn" title="Toggle theme">
-                        <svg id="sun-icon" class="hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
-                        </svg>
-                        <svg id="moon-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
-                        </svg>
-                    </button>
-                    <a href="https://github.com/JinY0ung-Shin/claude-code-gateway" target="_blank" rel="noopener noreferrer" class="icon-btn" title="View on GitHub">
-                        <svg fill="currentColor" viewBox="0 0 24 24">
-                            <path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"/>
-                        </svg>
-                    </a>
-                </div>
-            </header>
+    <!-- Quick Start -->
+    <div class="card">
+        <div class="card-title">Quick Start</div>
+        <div class="quickstart-wrapper">
+            <button id="copy-btn" onclick="copyQuickstart()" class="copy-btn" title="Copy">COPY</button>
+            <div id="quickstart-code">
+                <pre>curl -X POST http://localhost:{default_port}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{{"model": "sonnet", "messages": [{{"role": "user", "content": "Hello!"}}]}}'</pre>
+            </div>
+        </div>
+    </div>
 
-            <!-- Status Card -->
-            <article>
-                <div class="status-flex">
-                    <div class="status-left">
-                        <span class="status-dot" style="background-color: {status_color};"></span>
-                        <strong>{status_text}</strong>
-                    </div>
-                    <span class="auth-badge">Auth: <code class="green-code">{auth_method}</code></span>
-                </div>
-            </article>
+    <!-- API Endpoints -->
+    <div class="card">
+        <div class="card-title">API Endpoints</div>
 
-            <!-- Quick Start -->
-            <article>
-                <div class="section-header">
-                    <svg class="section-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                    <strong>Quick Start</strong>
-                </div>
-                <div class="quickstart-wrapper">
-                    <button onclick="copyQuickstart()" class="copy-btn" title="Copy to clipboard">
-                        <svg id="copy-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
-                        </svg>
-                        <svg id="check-icon" class="hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#22c55e;">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                        </svg>
-                    </button>
-                    <div id="quickstart-code"></div>
-                </div>
-            </article>
+        <div class="endpoint-group-label">Chat &amp; Completion</div>
+        <div class="endpoint-row">
+            <span class="badge badge-post">POST</span>
+            <span class="endpoint-path">/v1/chat/completions</span>
+            <span class="endpoint-desc">OpenAI-compatible chat</span>
+        </div>
+        <div class="endpoint-row">
+            <span class="badge badge-post">POST</span>
+            <span class="endpoint-path">/v1/messages</span>
+            <span class="endpoint-desc">Anthropic-compatible</span>
+        </div>
+        <div class="endpoint-row">
+            <span class="badge badge-post">POST</span>
+            <span class="endpoint-path">/v1/responses</span>
+            <span class="endpoint-desc">Responses API</span>
+        </div>
 
-            <!-- API Endpoints -->
-            <article>
-                <div class="section-header">
-                    <svg class="section-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                    <strong>API Endpoints</strong>
-                </div>
+        <div class="endpoint-group-label">Sessions</div>
 
-                <!-- Chat & Completion -->
-                <div class="endpoint-item endpoint-group">Chat & Completion</div>
-                <div class="endpoint-item">
-                    <span class="badge badge-post">POST</span>
-                    <code>/v1/chat/completions</code>
-                    <span class="endpoint-desc">OpenAI-compatible chat</span>
-                </div>
-                <div class="endpoint-item">
-                    <span class="badge badge-post">POST</span>
-                    <code>/v1/messages</code>
-                    <span class="endpoint-desc">Anthropic-compatible (Claude only)</span>
-                </div>
-                <div class="endpoint-item">
-                    <span class="badge badge-post">POST</span>
-                    <code>/v1/responses</code>
-                    <span class="endpoint-desc">Responses API with conversation chaining</span>
-                </div>
+        <details id="sessions" data-endpoint="/v1/sessions">
+            <summary>
+                <span class="badge badge-get">GET</span>
+                <span class="endpoint-path">/v1/sessions</span>
+                <span class="endpoint-desc">List active sessions</span>
+            </summary>
+            <div class="detail-body">
+                <span id="loader-sessions" class="loader hidden">Loading</span>
+                <div id="data-sessions"></div>
+            </div>
+        </details>
 
-                <!-- Session Management -->
-                <div class="endpoint-item endpoint-group">Sessions</div>
+        <details id="session-stats" data-endpoint="/v1/sessions/stats">
+            <summary>
+                <span class="badge badge-get">GET</span>
+                <span class="endpoint-path">/v1/sessions/stats</span>
+                <span class="endpoint-desc">Session statistics</span>
+            </summary>
+            <div class="detail-body">
+                <span id="loader-session-stats" class="loader hidden">Loading</span>
+                <div id="data-session-stats"></div>
+            </div>
+        </details>
 
-                <details id="sessions" data-endpoint="/v1/sessions" name="endpoints">
-                    <summary>
-                        <span class="badge badge-get">GET</span>
-                        <code>/v1/sessions</code>
-                        <span class="endpoint-desc">List active sessions</span>
-                    </summary>
-                    <div class="content">
-                        <small id="loader-sessions" class="hidden">Loading...</small>
-                        <div id="data-sessions"></div>
-                    </div>
-                </details>
+        <div class="endpoint-row">
+            <span class="badge badge-get">GET</span>
+            <span class="endpoint-path">/v1/sessions/{{session_id}}</span>
+            <span class="endpoint-desc">Get session</span>
+        </div>
+        <div class="endpoint-row">
+            <span class="badge badge-del">DEL</span>
+            <span class="endpoint-path">/v1/sessions/{{session_id}}</span>
+            <span class="endpoint-desc">Delete session</span>
+        </div>
 
-                <details id="session-stats" data-endpoint="/v1/sessions/stats" name="endpoints">
-                    <summary>
-                        <span class="badge badge-get">GET</span>
-                        <code>/v1/sessions/stats</code>
-                        <span class="endpoint-desc">Session statistics</span>
-                    </summary>
-                    <div class="content">
-                        <small id="loader-session-stats" class="hidden">Loading...</small>
-                        <div id="data-session-stats"></div>
-                    </div>
-                </details>
+        <div class="endpoint-group-label">Discovery &amp; Status</div>
 
-                <div class="endpoint-item">
-                    <span class="badge badge-get">GET</span>
-                    <code>/v1/sessions/{{session_id}}</code>
-                    <span class="endpoint-desc">Get specific session</span>
-                </div>
-                <div class="endpoint-item">
-                    <span class="badge badge-delete">DEL</span>
-                    <code>/v1/sessions/{{session_id}}</code>
-                    <span class="endpoint-desc">Delete session</span>
-                </div>
+        <details id="models" data-endpoint="/v1/models">
+            <summary>
+                <span class="badge badge-get">GET</span>
+                <span class="endpoint-path">/v1/models</span>
+                <span class="endpoint-desc">Available models</span>
+            </summary>
+            <div class="detail-body">
+                <span id="loader-models" class="loader hidden">Loading</span>
+                <div id="data-models"></div>
+            </div>
+        </details>
 
-                <!-- Discovery & Status -->
-                <div class="endpoint-item endpoint-group">Discovery & Status</div>
+        <details id="mcp" data-endpoint="/v1/mcp/servers">
+            <summary>
+                <span class="badge badge-get">GET</span>
+                <span class="endpoint-path">/v1/mcp/servers</span>
+                <span class="endpoint-desc">MCP servers</span>
+            </summary>
+            <div class="detail-body">
+                <span id="loader-mcp" class="loader hidden">Loading</span>
+                <div id="data-mcp"></div>
+            </div>
+        </details>
 
-                <details id="models" data-endpoint="/v1/models" name="endpoints">
-                    <summary>
-                        <span class="badge badge-get">GET</span>
-                        <code>/v1/models</code>
-                        <span class="endpoint-desc">List available models</span>
-                    </summary>
-                    <div class="content">
-                        <small id="loader-models" class="hidden">Loading...</small>
-                        <div id="data-models"></div>
-                    </div>
-                </details>
+        <details id="auth" data-endpoint="/v1/auth/status">
+            <summary>
+                <span class="badge badge-get">GET</span>
+                <span class="endpoint-path">/v1/auth/status</span>
+                <span class="endpoint-desc">Auth &amp; backend</span>
+            </summary>
+            <div class="detail-body">
+                <span id="loader-auth" class="loader hidden">Loading</span>
+                <div id="data-auth"></div>
+            </div>
+        </details>
 
-                <details id="mcp" data-endpoint="/v1/mcp/servers" name="endpoints">
-                    <summary>
-                        <span class="badge badge-get">GET</span>
-                        <code>/v1/mcp/servers</code>
-                        <span class="endpoint-desc">List MCP servers</span>
-                    </summary>
-                    <div class="content">
-                        <small id="loader-mcp" class="hidden">Loading...</small>
-                        <div id="data-mcp"></div>
-                    </div>
-                </details>
+        <details id="health" data-endpoint="/health">
+            <summary>
+                <span class="badge badge-get">GET</span>
+                <span class="endpoint-path">/health</span>
+                <span class="endpoint-desc">Health check</span>
+            </summary>
+            <div class="detail-body">
+                <span id="loader-health" class="loader hidden">Loading</span>
+                <div id="data-health"></div>
+            </div>
+        </details>
 
-                <details id="auth" data-endpoint="/v1/auth/status" name="endpoints">
-                    <summary>
-                        <span class="badge badge-get">GET</span>
-                        <code>/v1/auth/status</code>
-                        <span class="endpoint-desc">Auth &amp; backend status</span>
-                    </summary>
-                    <div class="content">
-                        <small id="loader-auth" class="hidden">Loading...</small>
-                        <div id="data-auth"></div>
-                    </div>
-                </details>
+        <details id="version" data-endpoint="/version">
+            <summary>
+                <span class="badge badge-get">GET</span>
+                <span class="endpoint-path">/version</span>
+                <span class="endpoint-desc">API version</span>
+            </summary>
+            <div class="detail-body">
+                <span id="loader-version" class="loader hidden">Loading</span>
+                <div id="data-version"></div>
+            </div>
+        </details>
 
-                <details id="health" data-endpoint="/health" name="endpoints">
-                    <summary>
-                        <span class="badge badge-get">GET</span>
-                        <code>/health</code>
-                        <span class="endpoint-desc">Health check</span>
-                    </summary>
-                    <div class="content">
-                        <small id="loader-health" class="hidden">Loading...</small>
-                        <div id="data-health"></div>
-                    </div>
-                </details>
+        <div class="endpoint-row">
+            <span class="badge badge-post">POST</span>
+            <span class="endpoint-path">/v1/compatibility</span>
+            <span class="endpoint-desc">Request compat check</span>
+        </div>
+    </div>
 
-                <details id="version" data-endpoint="/version" name="endpoints">
-                    <summary>
-                        <span class="badge badge-get">GET</span>
-                        <code>/version</code>
-                        <span class="endpoint-desc">API version</span>
-                    </summary>
-                    <div class="content">
-                        <small id="loader-version" class="hidden">Loading...</small>
-                        <div id="data-version"></div>
-                    </div>
-                </details>
+    <!-- Configuration -->
+    <div class="card">
+        <div class="card-title">Configuration</div>
+        <p style="color:var(--text-dim);font-size:var(--fs-sm);margin-bottom:0.75rem;">
+            Set <span style="color:var(--amber);">CLAUDE_AUTH_METHOD</span> to choose authentication:
+        </p>
+        <div class="config-grid" style="margin-bottom:1rem;">
+            <div class="config-item">
+                <div class="val">cli</div>
+                <div class="label">Claude CLI auth</div>
+            </div>
+            <div class="config-item">
+                <div class="val">api_key</div>
+                <div class="label">ANTHROPIC_AUTH_TOKEN</div>
+            </div>
+        </div>
+        <p style="color:var(--text-dim);font-size:var(--fs-sm);margin-bottom:0.75rem;">Backends:</p>
+        <div class="config-grid">
+            <div class="config-item">
+                <div class="val">Claude</div>
+                <div class="label">sonnet, opus, haiku</div>
+            </div>
+        </div>
+    </div>
 
-                <div class="endpoint-item">
-                    <span class="badge badge-post">POST</span>
-                    <code>/v1/compatibility</code>
-                    <span class="endpoint-desc">Check request compatibility</span>
-                </div>
-            </article>
+    <!-- Footer -->
+    <footer>
+        <nav>
+            <a href="/docs">API Docs</a>
+            <a href="/redoc">ReDoc</a>
+            <a href="/admin">Admin Terminal</a>
+        </nav>
+        <div class="copyright">CLAUDE CODE GATEWAY // v{version}</div>
+    </footer>
 
-            <!-- Configuration -->
-            <article>
-                <div class="section-header">
-                    <svg class="section-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                    <strong>Configuration</strong>
-                </div>
-                <p>Set <code>CLAUDE_AUTH_METHOD</code> to choose authentication:</p>
-                <div class="config-grid">
-                    <div class="config-item">
-                        <code class="green-code">cli</code>
-                        <p>Claude CLI auth</p>
-                    </div>
-                    <div class="config-item">
-                        <code class="green-code">api_key</code>
-                        <p>ANTHROPIC_AUTH_TOKEN</p>
-                    </div>
-                </div>
-                <p style="margin-top:1rem;">Backends:</p>
-                <div class="config-grid">
-                    <div class="config-item">
-                        <code class="green-code">Claude</code>
-                        <p>sonnet, opus, haiku</p>
-                    </div>
-                </div>
-            </article>
-
-            <!-- Footer -->
-            <footer>
-                <nav>
-                    <a href="/docs">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                        </svg>
-                        API Docs
-                    </a>
-                    <a href="/redoc">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
-                        </svg>
-                        ReDoc
-                    </a>
-                    <a href="/admin">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
-                        </svg>
-                        Admin
-                    </a>
-                </nav>
-            </footer>
-        </main>
-    </body>
-    </html>
-    """
+</main>
+</body>
+</html>"""
