@@ -1165,13 +1165,18 @@ input[type="checkbox"] {
       <!-- Skills Tab -->
       <div x-show="tab==='skills'" role="tabpanel">
         <div class="sidebar">
-          <div class="file-tree card">
+          <div class="file-tree card" style="max-height:80vh; overflow-y:auto">
             <div class="flex-between mb-sm">
               <h3 style="margin:0">Skills</h3>
               <button class="btn btn-sm btn-primary" @click="showNewSkillForm()">[+ NEW]</button>
             </div>
+
+            <!-- Local skills section -->
+            <div style="margin-bottom:4px">
+              <span class="text-xs text-muted" style="padding-left:12px">// LOCAL</span>
+            </div>
             <template x-for="s in skills" :key="s.name">
-              <div class="file-item" :class="{ active: selectedSkill === s.name }" @click="openSkill(s.name)">
+              <div class="file-item" :class="{ active: selectedSkill === s.name && !pluginSkillView }" @click="openSkill(s.name)">
                 <span class="icon" style="color:var(--green)">&#9881;</span>
                 <div style="flex:1; min-width:0">
                   <div style="font-size:var(--fs-sm); font-weight:600; color:var(--text-bright)" x-text="s.name"></div>
@@ -1180,11 +1185,52 @@ input[type="checkbox"] {
                 </div>
               </div>
             </template>
-            <div x-show="skills.length === 0" class="text-sm text-muted" style="padding:8px 12px">
-              [ NO SKILLS ]
+            <div x-show="skills.length === 0" class="text-sm text-muted" style="padding:4px 12px">
+              [ NONE ]
             </div>
+
+            <!-- Plugin skills section -->
+            <div x-show="plugins.length > 0" style="border-top:1px solid var(--border); margin-top:8px; padding-top:8px">
+              <span class="text-xs text-muted" style="padding-left:12px">// PLUGINS</span>
+            </div>
+            <template x-for="p in plugins" :key="p.id">
+              <div>
+                <!-- Plugin group header -->
+                <div class="file-item" style="cursor:pointer; opacity:0.8" @click="p._expanded = !p._expanded">
+                  <span class="text-xs" style="color:var(--amber); margin-right:4px" x-text="p._expanded ? '[-]' : '[+]'"></span>
+                  <div style="flex:1; min-width:0">
+                    <div class="flex-gap-sm">
+                      <span style="font-size:var(--fs-sm); font-weight:600; color:var(--amber)" x-text="p.name"></span>
+                      <span class="text-xs text-muted" x-text="p.version ? 'v' + p.version : ''"></span>
+                    </div>
+                    <div class="text-xs text-muted" x-text="(p.skills?.length || 0) + ' skills'"></div>
+                  </div>
+                </div>
+                <!-- Plugin skills (expandable) -->
+                <template x-if="p._expanded">
+                  <div>
+                    <template x-for="sk in (p.skills || [])" :key="p.id + ':' + sk.name">
+                      <div class="file-item" style="padding-left:28px"
+                        :class="{ active: pluginSkillView && pluginSkillView.pluginId === p.id && pluginSkillView.skillName === sk.name }"
+                        @click="openPluginSkill(p.id, sk.name, p.name, p.version)">
+                        <span class="icon" style="color:var(--cyan)">&#9670;</span>
+                        <div style="flex:1; min-width:0">
+                          <div style="font-size:var(--fs-sm); color:var(--text)" x-text="sk.name"></div>
+                          <div x-show="sk.description" class="text-xs text-muted" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis"
+                            x-text="sk.description"></div>
+                        </div>
+                      </div>
+                    </template>
+                    <div x-show="!p.skills || p.skills.length === 0" class="text-xs text-muted" style="padding:4px 12px 4px 28px">
+                      (no skills)
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
           </div>
           <div class="editor-area card">
+            <!-- New skill form -->
             <template x-if="skillCreating">
               <div style="padding:1rem">
                 <h3 style="margin-top:0">Create Skill</h3>
@@ -1198,17 +1244,20 @@ input[type="checkbox"] {
                 </div>
               </div>
             </template>
-            <template x-if="!selectedSkill && !skillCreating">
+            <!-- No selection -->
+            <template x-if="!selectedSkill && !skillCreating && !pluginSkillView">
               <div class="text-muted" style="padding:3rem; text-align:center">
                 <div style="font-size:2rem; margin-bottom:0.5rem; opacity:0.2">&#9881;</div>
                 select a skill or create new_<span class="cursor-blink"></span>
               </div>
             </template>
-            <template x-if="selectedSkill && !skillCreating">
+            <!-- Local skill editor -->
+            <template x-if="selectedSkill && !skillCreating && !pluginSkillView">
               <div>
                 <div class="editor-toolbar">
                   <div class="flex-gap-sm">
                     <span class="path" style="color:var(--text-bright)" x-text="selectedSkill"></span>
+                    <span class="badge text-xs" style="border-color:var(--green-dim); color:var(--green)">LOCAL</span>
                     <span class="text-xs" style="color:var(--text-dim)" x-text="(skillMeta.metadata?.version) ? 'v' + skillMeta.metadata.version : ''"></span>
                   </div>
                   <div class="flex-gap-sm">
@@ -1221,6 +1270,24 @@ input[type="checkbox"] {
                 <div style="margin-top:0.75rem; text-align:right">
                   <button class="btn btn-sm btn-danger-ghost" @click="confirmDeleteSkill()">[DELETE SKILL]</button>
                 </div>
+              </div>
+            </template>
+            <!-- Plugin skill read-only view -->
+            <template x-if="pluginSkillView && !skillCreating">
+              <div>
+                <div class="editor-toolbar">
+                  <div class="flex-gap-sm">
+                    <span style="color:var(--cyan); font-weight:600" x-text="pluginSkillView.pluginName + ':' + pluginSkillView.skillName"></span>
+                    <span class="badge text-xs" style="border-color:var(--amber); color:var(--amber)">PLUGIN</span>
+                    <span class="text-xs" style="color:var(--text-dim)" x-text="pluginSkillView.version ? 'v' + pluginSkillView.version : ''"></span>
+                  </div>
+                  <span class="text-xs text-muted" x-text="(pluginSkillContent?.length || 0) + ' chars'"></span>
+                </div>
+                <p class="text-xs text-muted mb-sm">// read-only. managed by CLI plugin system.</p>
+                <textarea readonly :value="pluginSkillContent || ''"
+                  style="width:100%; min-height:350px; max-height:60vh; font-family:var(--font); font-size:0.78rem;
+                    background:var(--bg-surface); color:var(--text-dim); border:1px solid var(--border);
+                    padding:8px; resize:vertical; cursor:default; border-radius:0"></textarea>
               </div>
             </template>
           </div>
@@ -1698,6 +1765,9 @@ function adminApp() {
     skillCreating: false,
     newSkillName: '',
     newSkillNameError: '',
+    plugins: [],
+    pluginSkillView: null,
+    pluginSkillContent: '',
     toolsRegistry: {},
     sandboxConfig: {},
     systemPrompt: { mode: 'preset', prompt: null, resolved_prompt: null, preset_text: null, char_count: 0, active_name: null },
@@ -2114,14 +2184,20 @@ function adminApp() {
     },
 
     async loadSkills() {
-      try {
-        const r = await this.api('/admin/api/skills');
-        if (r.ok) { const d = await r.json(); this.skills = d.skills || []; }
-      } catch(e) {}
+      const [r1, r2] = await Promise.all([
+        this.api('/admin/api/skills').catch(() => null),
+        this.api('/admin/api/plugins').catch(() => null),
+      ]);
+      if (r1?.ok) { const d = await r1.json(); this.skills = d.skills || []; }
+      if (r2?.ok) {
+        const d = await r2.json();
+        this.plugins = (d.plugins || []).map(p => ({ ...p, _expanded: false }));
+      }
     },
     async openSkill(name) {
       if (this.skillDirty && !confirm('Unsaved changes will be lost. Continue?')) return;
       this.skillCreating = false;
+      this.pluginSkillView = null;
       try {
         const r = await this.api('/admin/api/skills/' + encodeURIComponent(name));
         if (r.ok) {
@@ -2137,6 +2213,24 @@ function adminApp() {
           this.showToast(d.error || 'Failed to load skill', 'err');
         }
       } catch(e) { this.showToast('Connection error', 'err'); }
+    },
+    async openPluginSkill(pluginId, skillName, pluginName, version) {
+      if (this.skillDirty && !confirm('Unsaved changes will be lost. Continue?')) return;
+      this.selectedSkill = null;
+      this.skillCreating = false;
+      if (this.skillCm) { this.skillCm.toTextArea(); this.skillCm = null; }
+      this.pluginSkillView = { pluginId, skillName, pluginName, version };
+      this.pluginSkillContent = '';
+      try {
+        const r = await this.api('/admin/api/plugins/' + encodeURIComponent(pluginId) + '/skills/' + encodeURIComponent(skillName));
+        if (r.ok) {
+          const d = await r.json();
+          this.pluginSkillContent = d.content || '';
+        } else {
+          this.showToast('Failed to load plugin skill', 'err');
+          this.pluginSkillView = null;
+        }
+      } catch(e) { this.showToast('Connection error', 'err'); this.pluginSkillView = null; }
     },
     setupSkillEditor() {
       const ta = this.$refs.skillEditorArea;
@@ -2178,6 +2272,7 @@ function adminApp() {
       if (this.skillDirty && !confirm('Unsaved changes will be lost. Continue?')) return;
       this.skillCreating = true;
       this.selectedSkill = null;
+      this.pluginSkillView = null;
       this.skillDirty = false;
       this.newSkillName = '';
       this.newSkillNameError = '';
