@@ -485,7 +485,6 @@ from src.routes import (  # noqa: E402
     sessions_router,
     general_router,
     admin_router,
-    image_proxy_router,
 )
 
 app.include_router(chat_router)
@@ -494,7 +493,6 @@ app.include_router(responses_router)
 app.include_router(sessions_router)
 app.include_router(general_router)
 app.include_router(admin_router)
-app.include_router(image_proxy_router)
 
 
 # ==================== Backward-compat re-exports ====================
