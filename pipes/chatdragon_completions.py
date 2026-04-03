@@ -272,7 +272,12 @@ class Pipeline:
         if not owui_username and __user__:
             owui_username = __user__.get("name", "") or __user__.get("email", "")
         if owui_username:
-            extra_headers["X-OpenWebUI-User-Name"] = owui_username
+            try:
+                owui_username.encode("ascii")
+                extra_headers["X-OpenWebUI-User-Name"] = owui_username
+            except UnicodeEncodeError:
+                from urllib.parse import quote
+                extra_headers["X-OpenWebUI-User-Name"] = quote(owui_username)
 
         __cookies__ = body.get("cookies", {})
         if __cookies__ and not dscrowd_token:
