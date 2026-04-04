@@ -287,7 +287,11 @@ class DebugLoggingMiddleware(BaseHTTPMiddleware):
 
         # Log basic request info with request ID for correlation
         logger.debug(f"🔍 [{request_id}] Incoming request: {request.method} {request.url}")
-        logger.debug(f"🔍 [{request_id}] Headers: {dict(request.headers)}")
+        _SENSITIVE_HEADERS = {"authorization", "cookie", "x-api-key", "proxy-authorization"}
+        safe_headers = {
+            k: "***" if k.lower() in _SENSITIVE_HEADERS else v for k, v in request.headers.items()
+        }
+        logger.debug(f"🔍 [{request_id}] Headers: {safe_headers}")
 
         # For POST requests, try to log body (but don't break if we can't)
         body_logged = False
@@ -367,6 +371,16 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                         parsed = json.loads(body.decode())
                         model = parsed.get("model")
                         session_id = parsed.get("session_id")
+                        # Resolve backend from model name
+                        if model:
+                            try:
+                                from src.backends import resolve_model
+
+                                resolved = resolve_model(model)
+                                if resolved:
+                                    backend = resolved.backend
+                            except Exception:
+                                pass
             except Exception:
                 pass
 

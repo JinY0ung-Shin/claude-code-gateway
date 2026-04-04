@@ -152,7 +152,12 @@ class SessionManager:
             try:
                 while True:
                     await asyncio.sleep(self.cleanup_interval_minutes * 60)
-                    await self.cleanup_expired_sessions()
+                    try:
+                        await self.cleanup_expired_sessions()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception("Session cleanup cycle failed, will retry next interval")
             except asyncio.CancelledError:
                 logger.info("Session cleanup task cancelled")
                 raise
@@ -167,9 +172,24 @@ class SessionManager:
             logger.warning("No running event loop, automatic session cleanup disabled")
 
     async def cleanup_expired_sessions(self) -> int:
-        """Remove expired sessions.  Returns the count of sessions removed."""
+        """Remove expired sessions and stale image files.
+
+        Returns the count of sessions removed.
+        """
         with self.lock:
-            return self._purge_all_expired()
+            removed = self._purge_all_expired()
+
+        # Clean up stale image files from backends that have an image handler
+        try:
+            from src.backends.base import BackendRegistry
+
+            for _name, backend in BackendRegistry.all_backends().items():
+                if hasattr(backend, "cleanup_images"):
+                    backend.cleanup_images()
+        except Exception:
+            pass  # Registry may not be ready during tests/shutdown
+
+        return removed
 
     # ------------------------------------------------------------------
     # Lifecycle
