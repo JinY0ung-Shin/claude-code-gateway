@@ -37,6 +37,10 @@ PERMISSION_MODE_BYPASS = "bypassPermissions"
 SESSION_CLEANUP_INTERVAL_MINUTES = int(os.getenv("SESSION_CLEANUP_INTERVAL_MINUTES", "5"))
 SESSION_MAX_AGE_MINUTES = int(os.getenv("SESSION_MAX_AGE_MINUTES", "60"))
 
+# Per-user workspace isolation
+# Base directory for user workspaces. Falls back to CLAUDE_CWD if empty.
+USER_WORKSPACES_DIR = os.getenv("USER_WORKSPACES_DIR", "")
+
 # MCP Server Configuration
 # Path to MCP config JSON file or inline JSON string
 # Format: {"mcpServers": {"name": {"type": "stdio", "command": "...", "args": [...]}}}
