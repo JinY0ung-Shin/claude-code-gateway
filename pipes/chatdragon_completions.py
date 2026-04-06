@@ -277,20 +277,39 @@ class Pipeline:
                 stripped.append(m.group(1) if m else line)
             text = "\n".join(stripped).strip()
 
-        # Try standard JSON first
+        # Try standard JSON first, then Python literal
+        parsed = None
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
         except (json.JSONDecodeError, ValueError):
-            pass
+            import ast
+            try:
+                parsed = ast.literal_eval(text)
+            except (ValueError, SyntaxError):
+                return None
 
-        # Try Python literal (single quotes, True/False/None)
-        import ast
-        try:
-            return ast.literal_eval(text)
-        except (ValueError, SyntaxError):
-            pass
+        if parsed is None:
+            return None
 
-        return None
+        # If result is a content-block list, extract text and re-parse
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and parsed[0].get("type") == "text":
+            inner_texts = []
+            for b in parsed:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    inner_texts.append(b.get("text", ""))
+            inner = " ".join(inner_texts).strip()
+            if inner:
+                try:
+                    return json.loads(inner)
+                except (json.JSONDecodeError, ValueError):
+                    import ast
+                    try:
+                        return ast.literal_eval(inner)
+                    except (ValueError, SyntaxError):
+                        pass
+            return None
+
+        return parsed
 
     @staticmethod
     def _extract_thumbnails_from_tool_result(raw_content) -> list[str]:
