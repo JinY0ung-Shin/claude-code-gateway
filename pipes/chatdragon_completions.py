@@ -276,6 +276,7 @@ class Pipeline:
                 m = re.match(r"^\d+[\t ]+(.*)", line)
                 stripped.append(m.group(1) if m else line)
             text = "\n".join(stripped).strip()
+            log.info("[PIPE-PARSE] after line-strip: first500=%s", text[:500])
 
         # Try standard JSON first, then Python literal
         parsed = None
