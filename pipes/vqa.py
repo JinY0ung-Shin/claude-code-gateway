@@ -36,6 +36,7 @@ def read_image(image_path_or_url: str):
         return Image.open(io.BytesIO(response.content))
     elif image_path_or_url.startswith("data:image"):
         import base64
+
         header, encoded = image_path_or_url.split(",", 1)
         data = base64.b64decode(encoded)
         return Image.open(io.BytesIO(data))
@@ -45,15 +46,11 @@ def read_image(image_path_or_url: str):
 
 class VQAInput(BaseModel):
     query: str = Field(description="이미지에 대한 질문")
-    images: List[str] = Field(
-        description="이미지의 경로 또는 base64 인코딩 이미지의 list"
-    )
+    images: List[str] = Field(description="이미지의 경로 또는 base64 인코딩 이미지의 list")
 
     def to_payload(self):
         try:
-            base64imgs = [
-                pil_to_base64(read_image(img), use_data_url=True) for img in self.images
-            ]
+            base64imgs = [pil_to_base64(read_image(img), use_data_url=True) for img in self.images]
         except Exception:
             base64imgs = self.images
 
@@ -77,10 +74,7 @@ class VQAInput(BaseModel):
         }
 
 
-def call_vision_model_sync(
-    model_input: str,
-    payload: dict
-) -> str:
+def call_vision_model_sync(model_input: str, payload: dict) -> str:
     try:
         client = UnifiedModelClient(verify_ssl=False)
 
@@ -90,12 +84,12 @@ def call_vision_model_sync(
             temperature=payload["temperature"],
             max_tokens=payload["max_tokens"],
             stream=False,
-            timeout=60
+            timeout=60,
         )
 
         full_content = ""
-        if 'choices' in response and len(response['choices']) > 0:
-            full_content = response['choices'][0]['message']['content']
+        if "choices" in response and len(response["choices"]) > 0:
+            full_content = response["choices"][0]["message"]["content"]
         else:
             raise RuntimeError(f"Unexpected response format: {response}")
 
@@ -108,7 +102,7 @@ def call_vision_model_sync(
         # Wrap other exceptions in VQAError
         raise VQAError(
             message=f"Vision model API request failed: {e}",
-            metadata={"model_input": model_input, "error": str(e)}
+            metadata={"model_input": model_input, "error": str(e)},
         ) from e
 
 
@@ -119,24 +113,18 @@ VQA_DESCRIPTION = textwrap.dedent("""
 """).strip()
 
 
-async def vqa_search(
-    query: str,
-    images: List[str],
-    vision_model: str = "GaussO2-SAM-VL"
-) -> dict:
+async def vqa_search(query: str, images: List[str], vision_model: str = "GaussO2-SAM-VL") -> dict:
     try:
         input_data = VQAInput(query=query, images=images)
         payload = input_data.to_payload()
 
-        final_text = await asyncio.to_thread(
-            call_vision_model_sync, vision_model, payload
-        )
+        final_text = await asyncio.to_thread(call_vision_model_sync, vision_model, payload)
 
         output_dict = {
             "message": "이미지 분석 완료",
             "payload": {"answer": final_text},
             "type_ui": "VQA",
-            "model_used": vision_model
+            "model_used": vision_model,
         }
 
         return output_dict
@@ -154,18 +142,18 @@ async def vqa_search(
         return {
             "error": error_message,
             "model_used": vision_model,
-            "error_code": getattr(e, 'error_code', 'VQA_ERROR'),
-            "metadata": getattr(e, 'metadata', {})
+            "error_code": getattr(e, "error_code", "VQA_ERROR"),
+            "metadata": getattr(e, "metadata", {}),
         }
     except Exception as e:
         # Wrap unexpected exceptions in VQAError
         vqa_error = VQAError(
             message=f"Unexpected error in VQA search: {e}",
-            metadata={"original_error": str(e), "query": query}
+            metadata={"original_error": str(e), "query": query},
         )
         return {
             "error": f"VQA 분석 오류: {vqa_error.message}",
             "model_used": vision_model,
             "error_code": vqa_error.error_code,
-            "metadata": vqa_error.metadata
+            "metadata": vqa_error.metadata,
         }

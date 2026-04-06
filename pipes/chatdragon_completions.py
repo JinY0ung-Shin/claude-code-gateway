@@ -51,14 +51,14 @@ def _safe_attr(value: str) -> str:
     would break the attribute boundary.
     """
     return (
-        value
-        .replace("&", "+")   # neutralise entities (must be first)
-        .replace('"', "'")   # prevent closing the attribute
+        value.replace("&", "+")  # neutralise entities (must be first)
+        .replace('"', "'")  # prevent closing the attribute
         .replace("<", "[")
         .replace(">", "]")
         .replace("\n", " ")
         .replace("\r", "")
     )
+
 
 log = logging.getLogger(__name__)
 
@@ -115,7 +115,6 @@ class Pipeline:
             default="/app/shared_images",
             description="Shared directory for saving uploaded images (must be mounted in both Open WebUI and gateway containers)",
         )
-
 
         @field_validator("TOOL_DISPLAY", mode="before")
         @classmethod
@@ -266,7 +265,11 @@ class Pipeline:
                                 try:
                                     header, encoded = url.split(",", 1)
                                     # e.g. data:image/png;base64 -> png
-                                    ext = header.split("/")[1].split(";")[0] if "/" in header else "png"
+                                    ext = (
+                                        header.split("/")[1].split(";")[0]
+                                        if "/" in header
+                                        else "png"
+                                    )
                                     filename = f"{uuid4().hex}.{ext}"
                                     filepath = image_dir / filename
                                     filepath.write_bytes(base64.b64decode(encoded))
@@ -409,7 +412,8 @@ class Pipeline:
                         if "system_event" in evt_keys or "choices" not in evt_keys:
                             log.info(
                                 "[PIPE-DEBUG] sse_event keys=%s preview=%s",
-                                evt_keys, data_str[:300],
+                                evt_keys,
+                                data_str[:300],
                             )
 
                         # Handle system_event (tool_use, tool_result, task events)
@@ -418,16 +422,21 @@ class Pipeline:
                             event_type = sys_event.get("type", "")
                             log.info(
                                 "[PIPE] system_event type=%s keys=%s",
-                                event_type, list(sys_event.keys()),
+                                event_type,
+                                list(sys_event.keys()),
                             )
                             if event_type in ("tool_use", "tool_result"):
                                 any_tool_used = True
                                 log.info(
                                     "[PIPE-DEBUG] %s raw_event=%s",
-                                    event_type, json.dumps(sys_event, default=str)[:500],
+                                    event_type,
+                                    json.dumps(sys_event, default=str)[:500],
                                 )
                             rendered = self._render_system_event(
-                                event_type, sys_event, tool_names, tool_pending,
+                                event_type,
+                                sys_event,
+                                tool_names,
+                                tool_pending,
                             )
                             if rendered:
                                 if thought_wrapped and not response_tag_sent:
@@ -469,7 +478,7 @@ class Pipeline:
                                 if RESPONSE_TAG in text_buffer:
                                     idx = text_buffer.index(RESPONSE_TAG)
                                     before = text_buffer[:idx]
-                                    after = text_buffer[idx + len(RESPONSE_TAG):]
+                                    after = text_buffer[idx + len(RESPONSE_TAG) :]
                                     if before:
                                         yield before
                                     yield "\n</thought>\n\n"
@@ -548,10 +557,14 @@ class Pipeline:
             name = pending.get("name", tool_names.get(tool_id, ""))
             args = pending.get("args", "{}")
             is_error = event.get("is_error", False)
-            raw_content = event.get("content", "") or event.get("output", "") or event.get("result", "")
+            raw_content = (
+                event.get("content", "") or event.get("output", "") or event.get("result", "")
+            )
             log.info(
                 "[PIPE] tool_result id=%s name=%s content_type=%s content_preview=%s",
-                tool_id, name, type(raw_content).__name__,
+                tool_id,
+                name,
+                type(raw_content).__name__,
                 str(raw_content)[:300],
             )
             result_content = self._extract_tool_result_text(raw_content)
@@ -585,7 +598,10 @@ class Pipeline:
                 )
                 log.info(
                     "[PIPE-DEBUG] tool_id=%s name=%s args_len=%d result_len=%d",
-                    tool_id, name, len(safe_args), len(safe_result),
+                    tool_id,
+                    name,
+                    len(safe_args),
+                    len(safe_result),
                 )
                 log.info("[PIPE-DEBUG] raw_args=%s", args[:500])
                 log.info("[PIPE-DEBUG] safe_args=%s", safe_args[:500])

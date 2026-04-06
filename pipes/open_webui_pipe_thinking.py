@@ -262,9 +262,7 @@ class Pipe:
     def _build_full_instructions(self, instructions: str) -> str:
         """Build instructions with sentinel appended when WRAP_THINKING is on."""
         sentinel = (
-            self.valves.RESPONSE_SENTINEL_INSTRUCTION.strip()
-            if self.valves.WRAP_THINKING
-            else ""
+            self.valves.RESPONSE_SENTINEL_INSTRUCTION.strip() if self.valves.WRAP_THINKING else ""
         )
         if instructions and sentinel:
             return instructions + "\n\n" + sentinel
@@ -301,7 +299,10 @@ class Pipe:
                 yield f"Error: {e}"
 
     async def _stream_responses(
-        self, chat_id: str, payload: dict, instructions_hash: str,
+        self,
+        chat_id: str,
+        payload: dict,
+        instructions_hash: str,
     ) -> AsyncGenerator[str, None]:
         """Streaming /v1/responses call with <think> wrapping.
 
@@ -465,7 +466,7 @@ class Pipe:
                         else:
                             label = f"{prefix} {'Error' if is_error else 'Result'}"
                         result_text = str(content)[:500]
-                        yield f'\n<details>\n<summary>{label}</summary>\n\n````\n{result_text}\n````\n\n</details>\n'
+                        yield f"\n<details>\n<summary>{label}</summary>\n\n````\n{result_text}\n````\n\n</details>\n"
                     continue
 
                 if event_type == "response.task_started":
@@ -478,7 +479,7 @@ class Pipe:
                             yield f"[Task: {desc}]\n"
                         else:
                             escaped = html.escape(desc)
-                            yield f'\n<details>\n<summary>Task: {escaped}</summary>\n\n</details>\n'
+                            yield f"\n<details>\n<summary>Task: {escaped}</summary>\n\n</details>\n"
                     continue
 
                 if event_type == "response.task_progress":
@@ -496,7 +497,7 @@ class Pipe:
                         text = html.escape(desc)
                         if tool:
                             text += f" ({html.escape(tool)})"
-                        yield f'\n<details>\n<summary>Progress: {text}</summary>\n\n</details>\n'
+                        yield f"\n<details>\n<summary>Progress: {text}</summary>\n\n</details>\n"
                     continue
 
                 if event_type == "response.task_notification":
@@ -510,7 +511,7 @@ class Pipe:
                             yield f"[Task {status}: {summary}]\n"
                         else:
                             escaped = html.escape(summary)
-                            yield f'\n<details>\n<summary>Task {html.escape(status)}: {escaped}</summary>\n\n</details>\n'
+                            yield f"\n<details>\n<summary>Task {html.escape(status)}: {escaped}</summary>\n\n</details>\n"
                     continue
 
                 if event_type == "response.completed":
@@ -575,7 +576,8 @@ class Pipe:
     # ------------------------------------------------------------------
 
     async def _pipe_non_stream(
-        self, chat_id: str, payload: dict, instructions: str, instructions_hash: str, body: dict    ) -> str:
+        self, chat_id: str, payload: dict, instructions: str, instructions_hash: str, body: dict
+    ) -> str:
         try:
             return await self._call_responses(chat_id, payload, instructions_hash)
         except ChainResetError as e:

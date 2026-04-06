@@ -101,15 +101,14 @@ from src.backends.claude.constants import (  # noqa: E402, F401
     TOKEN_STREAMING,
     DISALLOWED_SUBAGENT_TYPES,
 )
+
 ALL_MODELS = CLAUDE_MODELS
 
 # Metadata → subprocess env var allowlist (comma-separated).
 # Only metadata keys listed here are passed as env vars to the Claude subprocess.
 # Example: METADATA_ENV_ALLOWLIST=THREAD_ID,A2A_BASE_URL
 METADATA_ENV_ALLOWLIST: frozenset[str] = frozenset(
-    k.strip()
-    for k in os.getenv("METADATA_ENV_ALLOWLIST", "").split(",")
-    if k.strip()
+    k.strip() for k in os.getenv("METADATA_ENV_ALLOWLIST", "").split(",") if k.strip()
 )
 
 # Debug / Verbose mode — single source of truth

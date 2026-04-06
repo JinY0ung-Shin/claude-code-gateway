@@ -48,9 +48,8 @@ def _safe_attr(value: str) -> str:
     would break the attribute boundary.
     """
     return (
-        value
-        .replace("&", "+")   # neutralise entities (must be first)
-        .replace('"', "'")   # prevent closing the attribute
+        value.replace("&", "+")  # neutralise entities (must be first)
+        .replace('"', "'")  # prevent closing the attribute
         .replace("<", "[")
         .replace(">", "]")
         .replace("\n", " ")
@@ -60,6 +59,7 @@ def _safe_attr(value: str) -> str:
 
 class ChainResetError(Exception):
     """Raised when the conversation chain needs to be reset and retried."""
+
     pass
 
 
@@ -151,7 +151,10 @@ class Pipeline:
                         log.info("[PIPE] Fetched dscrowd.token_key for user_id=%s", user_id)
                         return token
                 else:
-                    log.debug("[PIPE] Failed to fetch credential: status=%s, trying fallback", resp.status_code)
+                    log.debug(
+                        "[PIPE] Failed to fetch credential: status=%s, trying fallback",
+                        resp.status_code,
+                    )
 
                     # Fallback to original path
                     url = f"{self.valves.OPEN_WEBUI_URL}/api/v1/credentials/confluence/token"
@@ -160,7 +163,10 @@ class Pipeline:
                         data = resp.json()
                         token = data.get("token")
                         if token:
-                            log.info("[PIPE] Fetched dscrowd.token_key (fallback) for user_id=%s", user_id)
+                            log.info(
+                                "[PIPE] Fetched dscrowd.token_key (fallback) for user_id=%s",
+                                user_id,
+                            )
                             return token
         except Exception as e:
             log.warning("[PIPE] Error fetching credential: %s", e)
@@ -263,7 +269,9 @@ class Pipeline:
         dscrowd_token = meta_headers.get("x-cookie-dscrowd.token_key", "")
         if dscrowd_token:
             extra_headers["X-Cookie-dscrowd.token_key"] = dscrowd_token
-            log.info("[PIPE] Forwarding X-Cookie-dscrowd.token_key header (len=%d)", len(dscrowd_token))
+            log.info(
+                "[PIPE] Forwarding X-Cookie-dscrowd.token_key header (len=%d)", len(dscrowd_token)
+            )
 
         # Forward username from ENABLE_FORWARD_USER_INFO_HEADERS (lowercased in metadata)
         owui_username = meta_headers.get("x-openwebui-user-name", "")
@@ -279,10 +287,15 @@ class Pipeline:
             dscrowd_token = __cookies__.get("dscrowd.token_key", "")
             if dscrowd_token:
                 extra_headers["X-Cookie-dscrowd.token_key"] = dscrowd_token
-                log.info("[PIPE] Forwarding X-Cookie-dscrowd.token_key from cookies dict (len=%d)", len(dscrowd_token))
+                log.info(
+                    "[PIPE] Forwarding X-Cookie-dscrowd.token_key from cookies dict (len=%d)",
+                    len(dscrowd_token),
+                )
 
         log.info("[PIPE] __task__=%s, user_id=%s, chat_id=%s", __task__, __user_id__, __chat_id__)
-        log.info("[PIPE] meta_headers keys=%s", list(meta_headers.keys()) if meta_headers else "none")
+        log.info(
+            "[PIPE] meta_headers keys=%s", list(meta_headers.keys()) if meta_headers else "none"
+        )
         log.info("[PIPE] cookies keys=%s", list(__cookies__.keys()) if __cookies__ else "none")
         self._local.extra_headers = extra_headers
         log.info("[PIPE] extra_headers keys=%s", list(extra_headers.keys()))
@@ -319,7 +332,10 @@ class Pipeline:
             )
 
             # Add thought_wrapped instruction to user message if enabled
-            if self.valves.OUTPUT_FORMAT == "thought_wrapped" and self.valves.THOUGHT_WRAPPED_INSTRUCTION:
+            if (
+                self.valves.OUTPUT_FORMAT == "thought_wrapped"
+                and self.valves.THOUGHT_WRAPPED_INSTRUCTION
+            ):
                 thought_instruction = self._get_thought_wrapped_instruction()
                 current_input = current_input + thought_instruction
                 log.info("[PIPE] Injected thought_wrapped instruction into user message")
@@ -406,7 +422,7 @@ class Pipeline:
                         if RESPONSE_TAG in text_buffer:
                             idx = text_buffer.index(RESPONSE_TAG)
                             before = text_buffer[:idx]
-                            after = text_buffer[len(RESPONSE_TAG) + idx:]
+                            after = text_buffer[len(RESPONSE_TAG) + idx :]
 
                             if before:
                                 yield before
@@ -460,7 +476,7 @@ class Pipeline:
                             if RESPONSE_TAG in text_buffer:
                                 idx = text_buffer.index(RESPONSE_TAG)
                                 before = text_buffer[:idx]
-                                after = text_buffer[len(RESPONSE_TAG) + idx:]
+                                after = text_buffer[len(RESPONSE_TAG) + idx :]
                                 if before:
                                     yield before
                                 yield "\n</thought>\n\n"
@@ -507,7 +523,9 @@ class Pipeline:
         log.info("[STREAM] previous_response_id=%s", payload.get("previous_response_id"))
 
         with httpx.Client(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
-            with client.stream("POST", self._responses_url(), json=payload, headers=self._make_headers()) as resp:
+            with client.stream(
+                "POST", self._responses_url(), json=payload, headers=self._make_headers()
+            ) as resp:
                 log.info("[STREAM] Response status: %s", resp.status_code)
                 if resp.status_code != 200:
                     body_text = ""
@@ -544,7 +562,8 @@ class Pipeline:
                     ):
                         log.info(
                             "[PIPE-DEBUG] sse_event type=%s preview=%s",
-                            event_type, json.dumps(event, default=str)[:300],
+                            event_type,
+                            json.dumps(event, default=str)[:300],
                         )
 
                     if event_type == "response.output_text.delta":
@@ -583,7 +602,9 @@ class Pipeline:
                         name = event.get("name", "")
                         log.info(
                             "[PIPE-DEBUG] tool_use received: id=%s name=%s event=%s",
-                            tool_id, name, json.dumps(event, default=str)[:500],
+                            tool_id,
+                            name,
+                            json.dumps(event, default=str)[:500],
                         )
                         if tool_id:
                             tool_names[tool_id] = name
@@ -604,7 +625,9 @@ class Pipeline:
                         raw_content = event.get("content", "")
                         log.info(
                             "[PIPE] tool_result id=%s name=%s content_type=%s content_preview=%s",
-                            tool_id, name, type(raw_content).__name__,
+                            tool_id,
+                            name,
+                            type(raw_content).__name__,
                             str(raw_content)[:300],
                         )
                         # Extract plain text — content can be a string or
@@ -638,7 +661,10 @@ class Pipeline:
                         )
                         log.info(
                             "[PIPE-DEBUG] tool_id=%s name=%s args_len=%d result_len=%d",
-                            tool_id, name, len(safe_args), len(safe_result),
+                            tool_id,
+                            name,
+                            len(safe_args),
+                            len(safe_result),
                         )
                         log.info(
                             "[PIPE-DEBUG] raw_args=%s",
@@ -771,9 +797,7 @@ class Pipeline:
     def _call_responses(self, chat_id: str, payload: dict, instructions_hash: str) -> str:
         """Non-streaming /v1/responses call."""
         with httpx.Client(timeout=httpx.Timeout(self.valves.TIMEOUT)) as client:
-            resp = client.post(
-                self._responses_url(), json=payload, headers=self._make_headers()
-            )
+            resp = client.post(self._responses_url(), json=payload, headers=self._make_headers())
 
             if resp.status_code != 200:
                 detail = self._read_error_body(resp)
@@ -815,7 +839,9 @@ class Pipeline:
                     if isinstance(content, str):
                         messages[i] = {
                             **messages[i],
-                            "content": self._inject_context(content, __user__, __user_id__, __cookies__)
+                            "content": self._inject_context(
+                                content, __user__, __user_id__, __cookies__
+                            ),
                         }
                     break
 

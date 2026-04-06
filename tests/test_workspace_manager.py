@@ -1,11 +1,11 @@
 """Unit tests for WorkspaceManager."""
 
-import re
-import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from src.session_manager import Session
 from src.workspace_manager import WorkspaceManager
 
 
@@ -139,9 +139,6 @@ class TestCleanupTempWorkspace:
         manager.cleanup_temp_workspace(Path("/nonexistent/_tmp_abc"))
 
 
-from src.session_manager import Session
-
-
 class TestSessionUserField:
     def test_session_has_user_field(self):
         session = Session(session_id="test-1", user="alice")
@@ -158,10 +155,6 @@ class TestSessionUserField:
     def test_session_workspace_defaults_to_none(self):
         session = Session(session_id="test-4")
         assert session.workspace is None
-
-
-from unittest.mock import patch, AsyncMock, MagicMock
-from pathlib import Path
 
 
 class TestClaudeCLICwdOverride:
