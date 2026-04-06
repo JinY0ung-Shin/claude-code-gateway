@@ -289,11 +289,13 @@ class Pipeline:
         parsed = None
         try:
             parsed = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError) as e:
+            log.info("[PIPE-PARSE] json.loads failed: %s", str(e)[:200])
             import ast
             try:
                 parsed = ast.literal_eval(text)
-            except (ValueError, SyntaxError):
+            except (ValueError, SyntaxError) as e2:
+                log.info("[PIPE-PARSE] ast.literal_eval failed: %s", str(e2)[:200])
                 return None
 
         if parsed is None:
