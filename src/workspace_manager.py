@@ -73,8 +73,7 @@ class WorkspaceManager:
             raise ValueError("User identifier must not be empty")
         if not _USER_PATTERN.match(user):
             raise ValueError(
-                f"Invalid user identifier: {user!r}. "
-                "Must match ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$"
+                f"Invalid user identifier: {user!r}. Must match ^[a-zA-Z0-9][a-zA-Z0-9_-]{{0,62}}$"
             )
         return user
 
@@ -89,3 +88,39 @@ class WorkspaceManager:
         dst = workspace / ".claude"
         shutil.copytree(src, dst, dirs_exist_ok=True)
         logger.debug("Synced .claude/ template to %s", dst)
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton
+# ---------------------------------------------------------------------------
+
+import os  # noqa: E402
+from src.constants import USER_WORKSPACES_DIR  # noqa: E402
+
+
+def _resolve_base_path() -> Path:
+    """Determine the workspace base path from environment."""
+    if USER_WORKSPACES_DIR:
+        return Path(USER_WORKSPACES_DIR)
+    claude_cwd = os.getenv("CLAUDE_CWD", "")
+    if claude_cwd:
+        return Path(claude_cwd)
+    import tempfile
+
+    return Path(tempfile.mkdtemp(prefix="claude_workspaces_"))
+
+
+def _resolve_template_source() -> Optional[Path]:
+    """Determine the .claude template source directory."""
+    claude_cwd = os.getenv("CLAUDE_CWD", "")
+    if claude_cwd:
+        p = Path(claude_cwd)
+        if (p / ".claude").is_dir():
+            return p
+    return None
+
+
+workspace_manager = WorkspaceManager(
+    base_path=_resolve_base_path(),
+    template_source=_resolve_template_source(),
+)
