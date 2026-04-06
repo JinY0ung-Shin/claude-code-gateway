@@ -906,7 +906,9 @@ class Pipeline:
                         yield text_buffer
                     yield "\n</thought>"
 
-            # (tool_explorer tags already emitted live during streaming)
+            # Emit final tool_explorer tag (fallback / re-open button)
+            if tool_explorer_data:
+                yield self._build_tool_explorer_tag(tool_explorer_data)
 
             # Emit image gallery for collected MCP thumbnails
             if collected_thumbnails:
