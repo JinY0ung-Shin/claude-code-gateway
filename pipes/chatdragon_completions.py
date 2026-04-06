@@ -668,55 +668,82 @@ class Pipeline:
                                     or sys_event.get("output", "")
                                     or sys_event.get("result", "")
                                 )
+                                raw_str = str(raw)
                                 log.info(
                                     "[PIPE-PARSE] raw type=%s len=%s preview=%s",
                                     type(raw).__name__,
-                                    len(str(raw)),
-                                    str(raw)[:300],
+                                    len(raw_str),
+                                    raw_str[:300],
                                 )
-                                parsed = self._parse_tool_content(raw)
-                                log.info(
-                                    "[PIPE-PARSE] parsed type=%s result=%s",
-                                    type(parsed).__name__ if parsed else "None",
-                                    str(parsed)[:300] if parsed else "None",
-                                )
-                                # Thumbnails for gallery
-                                thumbs = self._extract_thumbnails_from_tool_result(raw)
-                                if thumbs:
-                                    collected_thumbnails.extend(thumbs)
-                                    log.info("[PIPE] collected %d thumbnails", len(thumbs))
-                                # Structured results for tool explorer
+                                # Detect persisted-output: SDK saved large
+                                # result to file and will Read it next.
                                 t_name = tool_names.get(tool_id, "")
-                                if t_name.startswith("mcp__"):
-                                    results = self._extract_tool_results_for_explorer(raw)
-                                    if results:
-                                        # Derive label from mcp__server__tool
-                                        parts = t_name.split("__")
-                                        label = parts[1] if len(parts) >= 2 else t_name
-                                        # Get query from pending args
-                                        pending = tool_pending.get(tool_id, {})
-                                        query = pending.get("args", "{}")
-                                        try:
-                                            q_parsed = json.loads(query)
-                                            # Use first string value as display query
-                                            query_str = ""
-                                            for v in q_parsed.values():
-                                                if isinstance(v, str) and len(v) > 2:
-                                                    query_str = v
-                                                    break
-                                            query = query_str or query
-                                        except (json.JSONDecodeError, AttributeError):
-                                            pass
-                                        if label not in tool_explorer_data:
-                                            tool_explorer_data[label] = []
-                                        tool_explorer_data[label].append({
-                                            "query": query[:200],
-                                            "results": results,
-                                        })
+                                is_persisted = "[persisted-output]" in raw_str or "Output too large" in raw_str
+                                if is_persisted and t_name.startswith("mcp__"):
+                                    # Remember this MCP tool for the next Read result
+                                    self._local._pending_persisted_tool = t_name
+                                    pending_info = tool_pending.get(tool_id, {})
+                                    self._local._pending_persisted_args = pending_info.get("args", "{}")
+                                    log.info(
+                                        "[PIPE-PARSE] persisted-output detected, remembering tool=%s",
+                                        t_name,
+                                    )
+                                else:
+                                    # Check if this is a Read that follows a persisted-output
+                                    persisted_tool = getattr(self._local, "_pending_persisted_tool", "")
+                                    if not t_name.startswith("mcp__") and persisted_tool:
+                                        # This Read result belongs to the previous MCP tool
+                                        t_name = persisted_tool
                                         log.info(
-                                            "[PIPE] tool_explorer: %s +%d results",
-                                            label, len(results),
+                                            "[PIPE-PARSE] Read result linked to persisted tool=%s",
+                                            t_name,
                                         )
+
+                                    parsed = self._parse_tool_content(raw)
+                                    log.info(
+                                        "[PIPE-PARSE] parsed type=%s result=%s",
+                                        type(parsed).__name__ if parsed else "None",
+                                        str(parsed)[:300] if parsed else "None",
+                                    )
+                                    # Thumbnails for gallery
+                                    thumbs = self._extract_thumbnails_from_tool_result(raw)
+                                    if thumbs:
+                                        collected_thumbnails.extend(thumbs)
+                                        log.info("[PIPE] collected %d thumbnails", len(thumbs))
+                                    # Structured results for tool explorer
+                                    if t_name.startswith("mcp__"):
+                                        results = self._extract_tool_results_for_explorer(raw)
+                                        if results:
+                                            parts = t_name.split("__")
+                                            label = parts[1] if len(parts) >= 2 else t_name
+                                            # Get query from args
+                                            persisted_args = getattr(self._local, "_pending_persisted_args", "")
+                                            pending = tool_pending.get(tool_id, {})
+                                            query = persisted_args or pending.get("args", "{}")
+                                            try:
+                                                q_parsed = json.loads(query)
+                                                query_str = ""
+                                                for v in q_parsed.values():
+                                                    if isinstance(v, str) and len(v) > 2:
+                                                        query_str = v
+                                                        break
+                                                query = query_str or query
+                                            except (json.JSONDecodeError, AttributeError):
+                                                pass
+                                            if label not in tool_explorer_data:
+                                                tool_explorer_data[label] = []
+                                            tool_explorer_data[label].append({
+                                                "query": query[:200],
+                                                "results": results,
+                                            })
+                                            log.info(
+                                                "[PIPE] tool_explorer: %s +%d results",
+                                                label, len(results),
+                                            )
+                                    # Clear persisted state after processing
+                                    if persisted_tool:
+                                        self._local._pending_persisted_tool = ""
+                                        self._local._pending_persisted_args = ""
                             rendered = self._render_system_event(
                                 event_type, sys_event, tool_names, tool_pending,
                             )
