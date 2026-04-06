@@ -158,3 +158,35 @@ class TestSessionUserField:
     def test_session_workspace_defaults_to_none(self):
         session = Session(session_id="test-4")
         assert session.workspace is None
+
+
+from unittest.mock import patch, AsyncMock, MagicMock
+from pathlib import Path
+
+
+class TestClaudeCLICwdOverride:
+    def test_build_sdk_options_uses_override_cwd(self, tmp_path):
+        """_build_sdk_options should use cwd param when provided."""
+        default_dir = tmp_path / "default"
+        override_dir = tmp_path / "override"
+        default_dir.mkdir()
+        override_dir.mkdir()
+
+        with patch("src.auth.validate_claude_code_auth", return_value=(True, {})):
+            from src.backends.claude.client import ClaudeCodeCLI
+
+            cli = ClaudeCodeCLI(cwd=str(default_dir))
+            options = cli._build_sdk_options(cwd=override_dir)
+            assert str(options.cwd) == str(override_dir)
+
+    def test_build_sdk_options_falls_back_to_self_cwd(self, tmp_path):
+        """_build_sdk_options should use self.cwd when cwd param is None."""
+        default_dir = tmp_path / "default"
+        default_dir.mkdir()
+
+        with patch("src.auth.validate_claude_code_auth", return_value=(True, {})):
+            from src.backends.claude.client import ClaudeCodeCLI
+
+            cli = ClaudeCodeCLI(cwd=str(default_dir))
+            options = cli._build_sdk_options(cwd=None)
+            assert str(options.cwd) == str(default_dir)
