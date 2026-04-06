@@ -233,22 +233,61 @@ class Pipeline:
         return results
 
     @staticmethod
-    def _extract_thumbnails_from_tool_result(raw_content) -> list[str]:
-        """Extract thumbnail URLs from MCP tool result content.
+    def _parse_tool_content(raw_content):
+        """Normalise raw MCP tool result into a Python object.
 
-        Supports both JSON string and pre-parsed structures.  Looks for
-        ``thumbnail`` fields inside ``responses`` / ``results`` / ``data``
-        arrays, as well as flat lists of dicts.
+        Handles: direct dict/list, JSON string, content-block list
+        ``[{type: text, text: ...}]``, and Python-repr single-quote strings.
+        Returns the parsed object or ``None`` on failure.
         """
         if not raw_content:
-            return []
+            return None
 
         data = raw_content
-        if isinstance(data, str):
-            try:
-                data = json.loads(data)
-            except (json.JSONDecodeError, ValueError):
-                return []
+
+        # Content-block list: [{"type": "text", "text": "..."}]
+        if isinstance(data, list):
+            texts = []
+            for b in data:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    texts.append(b.get("text", ""))
+                elif isinstance(b, str):
+                    texts.append(b)
+            if texts:
+                data = " ".join(texts).strip()
+            else:
+                # Already a plain list of results
+                return data
+
+        if isinstance(data, dict):
+            return data
+
+        if not isinstance(data, str):
+            return None
+
+        text = data.strip()
+
+        # Try standard JSON first
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Try Python literal (single quotes, True/False/None)
+        import ast
+        try:
+            return ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            pass
+
+        return None
+
+    @staticmethod
+    def _extract_thumbnails_from_tool_result(raw_content) -> list[str]:
+        """Extract thumbnail URLs from MCP tool result content."""
+        data = Pipeline._parse_tool_content(raw_content)
+        if not data:
+            return []
 
         thumbnails: list[str] = []
 
@@ -258,7 +297,6 @@ class Pipeline:
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                # Direct thumbnail field
                 thumb = item.get("thumbnail") or ""
                 if not thumb:
                     meta = item.get("metadata") or {}
@@ -278,19 +316,10 @@ class Pipeline:
 
     @staticmethod
     def _extract_tool_results_for_explorer(raw_content) -> list[dict]:
-        """Extract structured results from MCP tool result for the explorer sidebar.
-
-        Returns a list of dicts with keys: title, content, url, thumbnail, doc_type.
-        """
-        if not raw_content:
+        """Extract structured results from MCP tool result for the explorer sidebar."""
+        data = Pipeline._parse_tool_content(raw_content)
+        if not data:
             return []
-
-        data = raw_content
-        if isinstance(data, str):
-            try:
-                data = json.loads(data)
-            except (json.JSONDecodeError, ValueError):
-                return []
 
         items_list = None
         if isinstance(data, dict):
