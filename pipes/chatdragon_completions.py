@@ -289,14 +289,23 @@ class Pipeline:
         parsed = None
         try:
             parsed = json.loads(text)
-        except (json.JSONDecodeError, ValueError) as e:
-            log.info("[PIPE-PARSE] json.loads failed: %s", str(e)[:200])
-            import ast
-            try:
-                parsed = ast.literal_eval(text)
-            except (ValueError, SyntaxError) as e2:
-                log.info("[PIPE-PARSE] ast.literal_eval failed: %s", str(e2)[:200])
-                return None
+        except json.JSONDecodeError as e:
+            # "Extra data" means valid JSON followed by trailing content;
+            # truncate at the reported position and retry.
+            if "Extra data" in str(e) and hasattr(e, "pos") and e.pos:
+                try:
+                    parsed = json.loads(text[:e.pos])
+                    log.info("[PIPE-PARSE] json.loads recovered by truncating at pos=%d", e.pos)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if parsed is None:
+                log.info("[PIPE-PARSE] json.loads failed: %s", str(e)[:200])
+                import ast
+                try:
+                    parsed = ast.literal_eval(text)
+                except (ValueError, SyntaxError) as e2:
+                    log.info("[PIPE-PARSE] ast.literal_eval failed: %s", str(e2)[:200])
+                    return None
 
         if parsed is None:
             return None
