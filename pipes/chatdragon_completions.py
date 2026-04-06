@@ -268,12 +268,12 @@ class Pipeline:
         text = data.strip()
 
         # Strip line-number prefixes from Read tool output (cat -n format):
-        # "1\t[\n2\t  {\n3\t    'type': 'text',"
-        if re.match(r"^\d+\t", text):
+        # "1\t[\n2\t  {\n" or "1       [\n2         {\n" (tabs or spaces)
+        if re.match(r"^\d+[\t ]", text):
             lines = text.split("\n")
             stripped = []
             for line in lines:
-                m = re.match(r"^\d+\t(.*)", line)
+                m = re.match(r"^\d+[\t ]+(.*)", line)
                 stripped.append(m.group(1) if m else line)
             text = "\n".join(stripped).strip()
 
