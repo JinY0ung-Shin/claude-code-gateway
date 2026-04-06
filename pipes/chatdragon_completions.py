@@ -267,6 +267,16 @@ class Pipeline:
 
         text = data.strip()
 
+        # Strip line-number prefixes from Read tool output (cat -n format):
+        # "1\t[\n2\t  {\n3\t    'type': 'text',"
+        if re.match(r"^\d+\t", text):
+            lines = text.split("\n")
+            stripped = []
+            for line in lines:
+                m = re.match(r"^\d+\t(.*)", line)
+                stripped.append(m.group(1) if m else line)
+            text = "\n".join(stripped).strip()
+
         # Try standard JSON first
         try:
             return json.loads(text)
@@ -680,24 +690,40 @@ class Pipeline:
                                 t_name = tool_names.get(tool_id, "")
                                 is_persisted = "[persisted-output]" in raw_str or "Output too large" in raw_str
                                 if is_persisted and t_name.startswith("mcp__"):
-                                    # Remember this MCP tool for the next Read result
-                                    self._local._pending_persisted_tool = t_name
+                                    # Extract file path from persisted-output message
+                                    path_match = re.search(r"saved to:\s*(\S+)", raw_str)
+                                    persisted_path = path_match.group(1) if path_match else ""
+                                    # Store {file_path: (tool_name, args)} for matching
+                                    if not hasattr(self._local, "_persisted_map"):
+                                        self._local._persisted_map = {}
                                     pending_info = tool_pending.get(tool_id, {})
-                                    self._local._pending_persisted_args = pending_info.get("args", "{}")
+                                    self._local._persisted_map[persisted_path] = {
+                                        "tool": t_name,
+                                        "args": pending_info.get("args", "{}"),
+                                    }
                                     log.info(
-                                        "[PIPE-PARSE] persisted-output detected, remembering tool=%s",
-                                        t_name,
+                                        "[PIPE-PARSE] persisted-output detected tool=%s path=%s",
+                                        t_name, persisted_path,
                                     )
                                 else:
-                                    # Check if this is a Read that follows a persisted-output
-                                    persisted_tool = getattr(self._local, "_pending_persisted_tool", "")
-                                    if not t_name.startswith("mcp__") and persisted_tool:
-                                        # This Read result belongs to the previous MCP tool
-                                        t_name = persisted_tool
-                                        log.info(
-                                            "[PIPE-PARSE] Read result linked to persisted tool=%s",
-                                            t_name,
-                                        )
+                                    # Check if this Read's file_path matches a persisted-output
+                                    persisted_map = getattr(self._local, "_persisted_map", {})
+                                    persisted_match = None
+                                    if t_name == "Read" or not t_name.startswith("mcp__"):
+                                        # Check tool_use args for file_path
+                                        read_args = tool_pending.get(tool_id, {}).get("args", "{}")
+                                        try:
+                                            read_parsed = json.loads(read_args)
+                                            read_path = read_parsed.get("file_path", "")
+                                        except (json.JSONDecodeError, AttributeError):
+                                            read_path = ""
+                                        if read_path and read_path in persisted_map:
+                                            persisted_match = persisted_map.pop(read_path)
+                                            t_name = persisted_match["tool"]
+                                            log.info(
+                                                "[PIPE-PARSE] Read file_path=%s matched persisted tool=%s",
+                                                read_path, t_name,
+                                            )
 
                                     parsed = self._parse_tool_content(raw)
                                     log.info(
@@ -717,9 +743,9 @@ class Pipeline:
                                             parts = t_name.split("__")
                                             label = parts[1] if len(parts) >= 2 else t_name
                                             # Get query from args
-                                            persisted_args = getattr(self._local, "_pending_persisted_args", "")
+                                            orig_args = persisted_match["args"] if persisted_match else ""
                                             pending = tool_pending.get(tool_id, {})
-                                            query = persisted_args or pending.get("args", "{}")
+                                            query = orig_args or pending.get("args", "{}")
                                             try:
                                                 q_parsed = json.loads(query)
                                                 query_str = ""
@@ -740,10 +766,7 @@ class Pipeline:
                                                 "[PIPE] tool_explorer: %s +%d results",
                                                 label, len(results),
                                             )
-                                    # Clear persisted state after processing
-                                    if persisted_tool:
-                                        self._local._pending_persisted_tool = ""
-                                        self._local._pending_persisted_args = ""
+                                    # (persisted_map entries auto-removed via .pop above)
                             rendered = self._render_system_event(
                                 event_type, sys_event, tool_names, tool_pending,
                             )
