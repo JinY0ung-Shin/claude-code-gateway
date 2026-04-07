@@ -914,6 +914,16 @@ class Pipeline:
 
             # (tool_explorer tags emitted live during streaming)
 
+            # Emit final "검색된 문서 보기" button with all collected results
+            if tool_explorer_data:
+                body = json.dumps(tool_explorer_data, ensure_ascii=False)
+                yield (
+                    f'\n\n<details type="search_results_button" done="true">\n'
+                    f'<summary>Search Results</summary>\n'
+                    f'{body}\n'
+                    f'</details>\n\n'
+                )
+
             # Emit image gallery for collected MCP thumbnails
             if collected_thumbnails:
                 yield self._build_gallery_tag(images=collected_thumbnails)
