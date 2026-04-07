@@ -5,7 +5,7 @@
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://github.com/JinY0ung-Shin/claude-code-gateway)
 [![MIT License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-FastAPI gateway that exposes the Claude Agent SDK through OpenAI-compatible APIs. Use Claude Code with any OpenAI client library, Open WebUI, or custom integrations. Some OpenAI parameters (e.g., `temperature`, `top_p`) are accepted for compatibility but silently ignored — see `/v1/compatibility` for details.
+FastAPI gateway that exposes the Claude Agent SDK through OpenAI-compatible APIs. Use Claude Code with any OpenAI client library or custom integrations. Some OpenAI parameters (e.g., `temperature`, `top_p`) are accepted for compatibility but silently ignored — see `/v1/compatibility` for details.
 
 ## Quick Start
 
@@ -38,7 +38,6 @@ curl http://localhost:8000/v1/chat/completions \
 - **Token-Level Streaming** — Real-time token delivery via SDK partial messages
 - **Rate Limiting** — Per-endpoint configurable limits
 - **Docker Ready** — Dockerfile and docker-compose included
-- **Open WebUI Pipe** — Drop-in integration via `pipes/open_webui_pipe.py`
 
 ## Installation
 
@@ -160,16 +159,6 @@ curl http://localhost:8000/v1/messages \
   -H "Content-Type: application/json" \
   -d '{"model": "sonnet", "max_tokens": 512, "messages": [{"role": "user", "content": "Hello"}]}'
 ```
-
-### Open WebUI
-
-`pipes/open_webui_pipe.py` is included for Open WebUI integration. Configure in the pipe:
-
-- `BASE_URL` — Gateway URL (e.g., `http://localhost:8000`)
-- `API_KEY` — Gateway Bearer token, if enabled
-- `MODEL` — `sonnet`, `opus`, or `haiku`
-
-The pipe uses `/v1/responses` with `previous_response_id` chaining, maintaining real multi-turn continuity without replaying the full transcript.
 
 ## API Reference
 
