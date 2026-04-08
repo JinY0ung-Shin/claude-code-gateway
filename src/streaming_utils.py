@@ -518,6 +518,32 @@ def make_tool_result_response_sse(
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def make_function_call_response_sse(
+    response_id: str,
+    call_id: str,
+    name: str,
+    arguments: str,
+) -> str:
+    """Build SSE events for a function_call output item (e.g. AskUserQuestion).
+
+    Emits response.output_item.added with the function_call data.
+    """
+    item = {
+        "type": "function_call",
+        "id": f"fc_{call_id}",
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments,
+        "status": "completed",
+    }
+    event_data = {
+        "type": "response.output_item.added",
+        "response_id": response_id,
+        "item": item,
+    }
+    return f"event: response.output_item.added\ndata: {json.dumps(event_data)}\n\n"
+
+
 # ---------------------------------------------------------------------------
 # Chunk classification
 # ---------------------------------------------------------------------------
