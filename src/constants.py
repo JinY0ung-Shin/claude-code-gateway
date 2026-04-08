@@ -77,7 +77,6 @@ STREAM_FINAL_ONLY = parse_bool_env("STREAM_FINAL_ONLY", "false")
 # Rate Limiting defaults (requests per minute)
 # These are used by rate_limiter.py as the single source of truth
 RATE_LIMITS = {
-    "chat": int(os.getenv("RATE_LIMIT_CHAT_PER_MINUTE", "10")),
     "debug": int(os.getenv("RATE_LIMIT_DEBUG_PER_MINUTE", "2")),
     "auth": int(os.getenv("RATE_LIMIT_AUTH_PER_MINUTE", "10")),
     "session": int(os.getenv("RATE_LIMIT_SESSION_PER_MINUTE", "15")),
