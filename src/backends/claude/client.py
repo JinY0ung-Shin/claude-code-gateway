@@ -192,13 +192,27 @@ class ClaudeCodeCLI:
         # JSON schemas into the API request payload.
         mcp_servers = get_mcp_servers()
         if mcp_servers:
-            options["mcp_servers"] = mcp_servers
-            if request.enable_tools and request.allowed_tools is None:
-                # Only add all MCP patterns when no explicit list was given
-                mcp_patterns = get_mcp_tool_patterns(mcp_servers)
-                options.setdefault("allowed_tools", []).extend(mcp_patterns)
-                logger.debug(f"MCP tools enabled symbolically: {mcp_patterns}")
-            logger.debug(f"MCP servers enabled: {list(mcp_servers.keys())}")
+            if request.allowed_tools is not None:
+                # Filter MCP servers to only those matching allowed_tools patterns
+                allowed_set = set(request.allowed_tools)
+                filtered_servers = {}
+                for name, config in mcp_servers.items():
+                    safe_name = "_".join(name.split("-"))
+                    pattern = f"mcp__{safe_name}__*"
+                    if pattern in allowed_set:
+                        filtered_servers[name] = config
+                if filtered_servers:
+                    options["mcp_servers"] = filtered_servers
+                    logger.debug(f"MCP servers filtered to: {list(filtered_servers.keys())}")
+                else:
+                    logger.debug("No MCP servers match allowed_tools, skipping MCP")
+            else:
+                options["mcp_servers"] = mcp_servers
+                if request.enable_tools:
+                    mcp_patterns = get_mcp_tool_patterns(mcp_servers)
+                    options.setdefault("allowed_tools", []).extend(mcp_patterns)
+                    logger.debug(f"MCP tools enabled symbolically: {mcp_patterns}")
+                logger.debug(f"MCP servers enabled: {list(mcp_servers.keys())}")
 
         return options
 
