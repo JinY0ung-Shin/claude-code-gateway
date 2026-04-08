@@ -4,6 +4,7 @@ Wraps the Claude Agent SDK ``query()`` function into a ``BackendClient``
 implementation registered as the ``claude`` backend.
 """
 
+import asyncio
 import os
 import tempfile
 import atexit
@@ -13,7 +14,7 @@ from typing import AsyncGenerator, Dict, Any, Optional, List
 from pathlib import Path
 import logging
 
-from claude_agent_sdk import query, ClaudeAgentOptions
+from claude_agent_sdk import query, ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import (
     StreamEvent,
     AssistantMessage,
@@ -21,6 +22,8 @@ from claude_agent_sdk.types import (
     UserMessage,
     SystemMessage,
     RateLimitEvent,
+    PermissionResultAllow,
+    ToolPermissionContext,
 )
 from claude_agent_sdk.types import (
     SandboxSettings,
@@ -487,6 +490,97 @@ class ClaudeCodeCLI:
 
     # Backward-compatible alias — existing code calls verify_cli().
     verify_cli = verify
+
+    # ------------------------------------------------------------------
+    # ClaudeSDKClient lifecycle (persistent, bidirectional sessions)
+    # ------------------------------------------------------------------
+
+    def _make_can_use_tool(self, session):
+        """Create a ``can_use_tool`` callback bound to *session*.
+
+        When the SDK invokes the ``AskUserQuestion`` tool the callback
+        parks the session (sets ``pending_tool_call`` and waits on
+        ``input_event``) so the HTTP layer can surface it as a
+        ``function_call`` and later unblock with the user's response.
+
+        All other tools are allowed immediately.
+        """
+
+        async def can_use_tool(tool_name: str, tool_input: dict, context: ToolPermissionContext):
+            if tool_name == "AskUserQuestion":
+                session.pending_tool_call = {
+                    "call_id": context.tool_use_id,
+                    "name": "AskUserQuestion",
+                    "arguments": tool_input,
+                }
+                session.input_event = asyncio.Event()
+                await session.input_event.wait()
+                session.input_response = None
+                session.input_event = None
+                return PermissionResultAllow()
+            return PermissionResultAllow()
+
+        return can_use_tool
+
+    async def create_client(
+        self,
+        session,
+        model: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        allowed_tools: Optional[List[str]] = None,
+        disallowed_tools: Optional[List[str]] = None,
+        permission_mode: Optional[str] = None,
+        mcp_servers: Optional[Dict[str, Any]] = None,
+        task_budget: Optional[int] = None,
+        cwd: Optional[str] = None,
+    ) -> ClaudeSDKClient:
+        """Create and connect a :class:`ClaudeSDKClient` for *session*.
+
+        The client is connected with ``prompt=None`` (interactive mode)
+        so subsequent turns can be sent via ``client.query()``.
+        """
+        options = self._build_sdk_options(
+            model=model,
+            system_prompt=system_prompt,
+            max_turns=10,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            session_id=session.session_id,
+            resume=None,
+            permission_mode=permission_mode,
+            mcp_servers=mcp_servers,
+            task_budget=task_budget,
+            cwd=Path(cwd) if cwd else None,
+        )
+        options.can_use_tool = self._make_can_use_tool(session)
+
+        with self._sdk_env():
+            client = ClaudeSDKClient(options=options)
+            await client.connect(prompt=None)
+
+        return client
+
+    async def run_completion_with_client(
+        self,
+        client: ClaudeSDKClient,
+        prompt: str,
+        session,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Run a completion turn on an existing *client*.
+
+        Sends *prompt* via ``client.query()`` then yields converted
+        message dicts from ``client.receive_response()``.  On error the
+        session's client reference is cleared so the caller can detect
+        the broken connection and create a fresh client.
+        """
+        try:
+            await client.query(prompt)
+            async for message in client.receive_response():
+                yield self._convert_message(message)
+        except Exception as exc:
+            logger.error("ClaudeSDKClient error: %s", exc, exc_info=True)
+            session.client = None
+            yield {"type": "error", "is_error": True, "error": str(exc)}
 
     async def run_completion(
         self,
