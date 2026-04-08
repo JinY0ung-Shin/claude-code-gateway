@@ -328,7 +328,12 @@ async def create_response(
 
         async def _run_stream():
             lock_acquired = preflight["lock_acquired"]
-            stream_result = {"success": False}
+            stream_result: dict = {"success": False}
+            # When using SDK client, the PreToolUse hook may break the
+            # stream with no text content.  Suppress the empty_response
+            # failed event so we can emit function_call + requires_action.
+            if use_sdk_client:
+                stream_result["allow_empty"] = True
             try:
                 chunks_buffer = []
 
