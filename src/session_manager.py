@@ -70,6 +70,7 @@ class Session:
     input_event: Optional[asyncio.Event] = field(default=None, repr=False, compare=False)
     input_response: Optional[str] = None
     pending_tool_call: Optional[Dict[str, Any]] = None
+    stream_break_event: Optional[asyncio.Event] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.created_at = _ensure_utc(self.created_at)

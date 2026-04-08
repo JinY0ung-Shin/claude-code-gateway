@@ -10,6 +10,7 @@ import tempfile
 import atexit
 import shutil
 import contextlib
+import uuid
 from typing import AsyncGenerator, Dict, Any, Optional, List
 from pathlib import Path
 import logging
@@ -530,6 +531,12 @@ class ClaudeCodeCLI:
             }
             session.input_event = asyncio.Event()
 
+            # Signal the streaming loop to break so the route can
+            # emit function_call + requires_action before the hook
+            # blocks waiting for user input.
+            if session.stream_break_event is not None:
+                session.stream_break_event.set()
+
             try:
                 await asyncio.wait_for(
                     session.input_event.wait(),
@@ -588,13 +595,17 @@ class ClaudeCodeCLI:
         The client is connected with ``prompt=None`` (interactive mode)
         so subsequent turns can be sent via ``client.query()``.
         """
+        # Use a fresh session_id for the persistent client — the gateway
+        # session_id was already consumed by the Turn-1 query() call, and
+        # the CLI rejects reuse ("Session ID … is already in use").
+        client_session_id = str(uuid.uuid4())
         options = self._build_sdk_options(
             model=model,
             system_prompt=system_prompt,
             max_turns=10,
             allowed_tools=allowed_tools,
             disallowed_tools=disallowed_tools,
-            session_id=session.session_id,
+            session_id=client_session_id,
             resume=None,
             permission_mode=permission_mode,
             mcp_servers=mcp_servers,
@@ -628,15 +639,55 @@ class ClaudeCodeCLI:
         message dicts from ``client.receive_response()``.  On error the
         session's client reference is cleared so the caller can detect
         the broken connection and create a fresh client.
+
+        When a PreToolUse hook fires for AskUserQuestion, it sets
+        ``session.stream_break_event`` to signal this loop to stop
+        yielding so the route can emit function_call + requires_action.
         """
+        # Provide an event the hook can signal to break streaming
+        break_event = asyncio.Event()
+        session.stream_break_event = break_event
         try:
             await client.query(prompt)
-            async for message in client.receive_response():
-                yield self._convert_message(message)
+            response_iter = client.receive_response().__aiter__()
+            while True:
+                # Race: next message vs hook-fired break signal
+                get_next = asyncio.ensure_future(response_iter.__anext__())
+                wait_break = asyncio.ensure_future(break_event.wait())
+                done, pending = await asyncio.wait(
+                    [get_next, wait_break],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, StopAsyncIteration):
+                        pass
+
+                if wait_break in done:
+                    # Hook fired — yield any message that arrived concurrently,
+                    # then break so the route can emit function_call.
+                    if get_next in done:
+                        try:
+                            yield self._convert_message(get_next.result())
+                        except StopAsyncIteration:
+                            pass
+                    break
+
+                # Normal message arrived
+                if get_next in done:
+                    try:
+                        message = get_next.result()
+                    except StopAsyncIteration:
+                        break  # Stream ended normally (ResultMessage received)
+                    yield self._convert_message(message)
         except Exception as exc:
             logger.error("ClaudeSDKClient error: %s", exc, exc_info=True)
             session.client = None
             yield {"type": "error", "is_error": True, "error": str(exc)}
+        finally:
+            session.stream_break_event = None
 
     async def receive_response_from_client(
         self,
