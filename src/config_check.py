@@ -458,7 +458,9 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
     reclaims the worker underneath a still-open stream). Both guards tick on the
     keepalive timer, so ``SSE_KEEPALIVE_INTERVAL=0`` disables them silently.
     Mirrors the derivation in ``src.constants`` with os.environ only
-    (early-import rule).
+    (early-import rule). The two timeout inequalities are hard startup
+    requirements: if either is impossible, serving traffic would knowingly
+    reintroduce timeout inversion, so they are error-severity rather than advice.
     """
     issues: List[ConfigIssue] = []
     keepalive = _int_env("SSE_KEEPALIVE_INTERVAL", 15)
@@ -491,7 +493,7 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
         )
         issues.append(
             ConfigIssue(
-                "warning",
+                "error",
                 f"{culprit} is not below the in-flight tool stall budget "
                 f"({effective_tool_stall}s): the gateway will fail the whole turn "
                 "before the CLI can time the tool call out and hand the model a tool "
@@ -502,7 +504,7 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
     if max_age > 0 and effective_tool_stall > 0 and max_age <= effective_tool_stall:
         issues.append(
             ConfigIssue(
-                "warning",
+                "error",
                 f"ACTIVE_TURN_MAX_AGE={max_age}s is not above the tool stall budget "
                 f"({effective_tool_stall}s): the expiry sweep can reclaim a worker "
                 "while a legitimately slow tool call is still within budget. Set "
