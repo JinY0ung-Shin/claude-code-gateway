@@ -445,22 +445,28 @@ def _int_env(name: str, default: int) -> int:
 def _check_stall_hierarchy() -> List[ConfigIssue]:
     """The silence budgets must nest, or a healthy long tool call gets killed.
 
-    Order (innermost first): the CLI's per-call watchdogs — ``MCP_TOOL_TIMEOUT``
-    for MCP tools and ``BASH_MAX_TIMEOUT_MS`` (else the CLI's built-in 600000 ms;
-    ``BASH_DEFAULT_TIMEOUT_MS`` is a per-call default, not a ceiling, so it is
-    deliberately ignored) for Bash; a breach returns a tool *error*
-    and the turn survives — < the gateway's in-flight-tool stall budget
-    ``TOOL_STALL_TIMEOUT`` (defaults to the larger watchdog + grace; a breach
-    fails the whole turn) < ``ACTIVE_TURN_MAX_AGE``
-    (the expiry sweep's no-progress valve; a breach reclaims the worker
-    underneath a still-open stream). Both guards tick on the keepalive timer,
-    so ``SSE_KEEPALIVE_INTERVAL=0`` disables them silently. Mirrors the
-    derivation in ``src.constants`` with os.environ only (early-import rule).
+    Order (innermost first): the CLI's per-call watchdogs — the gateway-owned
+    effective ``MCP_TOOL_TIMEOUT`` (positive operator value, else 600000 ms) for
+    MCP tools, and ``BASH_MAX_TIMEOUT_MS`` (else the CLI's built-in 600000 ms;
+    ``BASH_DEFAULT_TIMEOUT_MS`` is a per-call default, not a ceiling) for Bash.
+    Per-server MCP ``timeout`` values above the global MCP ceiling are clamped by
+    ``src.mcp_config.resolve_mcp_servers`` before the CLI sees them. A tool
+    watchdog breach returns a tool *error* and the turn survives — < the
+    gateway's in-flight-tool stall budget ``TOOL_STALL_TIMEOUT`` (defaults to
+    the larger watchdog + grace; a breach fails the whole turn) <
+    ``ACTIVE_TURN_MAX_AGE`` (the expiry sweep's no-progress valve; a breach
+    reclaims the worker underneath a still-open stream). Both guards tick on the
+    keepalive timer, so ``SSE_KEEPALIVE_INTERVAL=0`` disables them silently.
+    Mirrors the derivation in ``src.constants`` with os.environ only
+    (early-import rule).
     """
     issues: List[ConfigIssue] = []
     keepalive = _int_env("SSE_KEEPALIVE_INTERVAL", 15)
     stream_stall = _int_env("STREAM_STALL_TIMEOUT", 600)
-    mcp_tool_ms = max(_int_env("MCP_TOOL_TIMEOUT", 0), 0)
+    # src.constants.effective_mcp_tool_timeout_ms(): positive explicit value,
+    # otherwise the gateway-owned 600000 ms product default. Non-positive and
+    # invalid values are treated as unset.
+    mcp_tool_ms = max(_int_env("MCP_TOOL_TIMEOUT", 600_000), 0) or 600_000
     bash_ms = max(_int_env("BASH_MAX_TIMEOUT_MS", 0), 0) or 600_000
     watchdog_ms = max(mcp_tool_ms, bash_ms)
     derived_tool_stall = -(-watchdog_ms // 1000) + 60
@@ -479,7 +485,7 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
         )
     if effective_tool_stall > 0 and watchdog_ms // 1000 >= effective_tool_stall:
         culprit = (
-            f"MCP_TOOL_TIMEOUT={mcp_tool_ms}ms"
+            f"MCP_TOOL_TIMEOUT={mcp_tool_ms}ms (effective gateway ceiling)"
             if mcp_tool_ms >= bash_ms
             else f"Bash timeout {bash_ms}ms (BASH_MAX_TIMEOUT_MS / CLI max 600000)"
         )
