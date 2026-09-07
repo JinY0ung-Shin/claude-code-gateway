@@ -446,8 +446,9 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
     """The silence budgets must nest, or a healthy long tool call gets killed.
 
     Order (innermost first): the CLI's per-call watchdogs — ``MCP_TOOL_TIMEOUT``
-    for MCP tools and ``BASH_MAX_TIMEOUT_MS`` (else ``BASH_DEFAULT_TIMEOUT_MS``,
-    else the CLI's built-in 600000 ms) for Bash; a breach returns a tool *error*
+    for MCP tools and ``BASH_MAX_TIMEOUT_MS`` (else the CLI's built-in 600000 ms;
+    ``BASH_DEFAULT_TIMEOUT_MS`` is a per-call default, not a ceiling, so it is
+    deliberately ignored) for Bash; a breach returns a tool *error*
     and the turn survives — < the gateway's in-flight-tool stall budget
     ``TOOL_STALL_TIMEOUT`` (defaults to the larger watchdog + grace; a breach
     fails the whole turn) < ``ACTIVE_TURN_MAX_AGE``
@@ -460,11 +461,7 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
     keepalive = _int_env("SSE_KEEPALIVE_INTERVAL", 15)
     stream_stall = _int_env("STREAM_STALL_TIMEOUT", 600)
     mcp_tool_ms = max(_int_env("MCP_TOOL_TIMEOUT", 0), 0)
-    bash_ms = (
-        max(_int_env("BASH_MAX_TIMEOUT_MS", 0), 0)
-        or max(_int_env("BASH_DEFAULT_TIMEOUT_MS", 0), 0)
-        or 600_000
-    )
+    bash_ms = max(_int_env("BASH_MAX_TIMEOUT_MS", 0), 0) or 600_000
     watchdog_ms = max(mcp_tool_ms, bash_ms)
     derived_tool_stall = -(-watchdog_ms // 1000) + 60
     tool_stall = _int_env("TOOL_STALL_TIMEOUT", derived_tool_stall)
@@ -484,8 +481,7 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
         culprit = (
             f"MCP_TOOL_TIMEOUT={mcp_tool_ms}ms"
             if mcp_tool_ms >= bash_ms
-            else f"Bash timeout {bash_ms}ms (BASH_MAX_TIMEOUT_MS / BASH_DEFAULT_TIMEOUT_MS "
-            "/ CLI default 600000)"
+            else f"Bash timeout {bash_ms}ms (BASH_MAX_TIMEOUT_MS / CLI max 600000)"
         )
         issues.append(
             ConfigIssue(

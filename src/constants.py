@@ -213,11 +213,14 @@ STREAM_STALL_TIMEOUT_SECONDS = parse_int_env("STREAM_STALL_TIMEOUT", 600)
 # (tool error → the model can react, the turn survives) and the gateway's
 # whole-turn stall kill is the last resort, not the first.
 TOOL_STALL_GRACE_SECONDS = 60
-# The Claude CLI's Bash tool limits when BASH_*_TIMEOUT_MS are not set (the
-# tool schema's own words: default 120000 ms, max 600000 ms). Bash is the one
-# built-in that can legitimately stay silent this long — a command with no
-# output emits no bash_progress frame — so the tool budget has to sit above it.
-CLI_BASH_DEFAULT_TIMEOUT_MS = 120_000
+# The Claude CLI's Bash tool ceiling when BASH_MAX_TIMEOUT_MS is not set (the
+# tool schema's own words: max 600000 ms). Bash is the one built-in that can
+# legitimately stay silent this long — a command with no output emits no
+# bash_progress frame — so the tool budget has to sit above it. Only the
+# MAXIMUM counts here: BASH_DEFAULT_TIMEOUT_MS is what a call gets when it
+# names no timeout, and a call may still ask for anything up to the max, so
+# using the default as the ceiling would recreate the very inversion this
+# budget exists to prevent (review on #182).
 CLI_BASH_MAX_TIMEOUT_MS = 600_000
 
 
@@ -239,16 +242,13 @@ def cli_tool_watchdog_ms() -> int:
     Two per-call watchdogs bound that silence, both inherited by the CLI from
     this process env: ``MCP_TOOL_TIMEOUT`` for MCP tools (no known CLI default,
     so only counted when set) and ``BASH_MAX_TIMEOUT_MS`` for the Bash tool
-    (falls back to ``BASH_DEFAULT_TIMEOUT_MS``, then the CLI's built-in max).
-    The budget must clear the larger one: TaskCreate is instant and subagents
-    keep streaming, but a silent Bash job or a slow MCP server both look
-    identical to a wedge until their own watchdog speaks.
+    (else the CLI's built-in max — never ``BASH_DEFAULT_TIMEOUT_MS``, which is
+    a per-call default a call can exceed up to the max). The budget must clear
+    the larger one: TaskCreate is instant and subagents keep streaming, but a
+    silent Bash job or a slow MCP server both look identical to a wedge until
+    their own watchdog speaks.
     """
-    bash_ms = (
-        _positive_ms_env("BASH_MAX_TIMEOUT_MS")
-        or _positive_ms_env("BASH_DEFAULT_TIMEOUT_MS")
-        or CLI_BASH_MAX_TIMEOUT_MS
-    )
+    bash_ms = _positive_ms_env("BASH_MAX_TIMEOUT_MS") or CLI_BASH_MAX_TIMEOUT_MS
     return max(_positive_ms_env("MCP_TOOL_TIMEOUT"), bash_ms)
 
 

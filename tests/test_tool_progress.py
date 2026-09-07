@@ -513,11 +513,24 @@ class TestToolStallDefaults:
             == 1800 + constants.TOOL_STALL_GRACE_SECONDS
         )
 
-    def test_bash_default_env_used_when_no_max(self, monkeypatch):
-        monkeypatch.setenv("BASH_DEFAULT_TIMEOUT_MS", "240000")
+    def test_bash_default_is_not_a_ceiling(self, monkeypatch):
+        """Review on #182: BASH_DEFAULT_TIMEOUT_MS is what a call gets when it
+        names no timeout; a call may still ask for up to the max. Deriving the
+        budget from the default would kill a valid 600 s Bash call at 180 s —
+        the inversion this budget exists to prevent."""
+        monkeypatch.setenv("BASH_DEFAULT_TIMEOUT_MS", "120000")
+        assert constants.cli_tool_watchdog_ms() == constants.CLI_BASH_MAX_TIMEOUT_MS
         assert (
             constants._tool_stall_timeout_default()
-            == 240 + constants.TOOL_STALL_GRACE_SECONDS
+            == 600 + constants.TOOL_STALL_GRACE_SECONDS
+        )
+
+    def test_bash_default_does_not_lower_an_explicit_max(self, monkeypatch):
+        monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "900000")
+        monkeypatch.setenv("BASH_DEFAULT_TIMEOUT_MS", "120000")
+        assert (
+            constants._tool_stall_timeout_default()
+            == 900 + constants.TOOL_STALL_GRACE_SECONDS
         )
 
     def test_rounds_partial_seconds_up(self, monkeypatch):
@@ -575,6 +588,13 @@ class TestStallHierarchyCheck:
         monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "120000")
         monkeypatch.setenv("TOOL_STALL_TIMEOUT", "300")
         assert config_check._check_stall_hierarchy() == []
+
+    def test_bash_default_alone_does_not_clear_a_short_tool_budget(self, monkeypatch):
+        """Mirror of the constants rule: the default is not the ceiling."""
+        monkeypatch.setenv("BASH_DEFAULT_TIMEOUT_MS", "120000")
+        monkeypatch.setenv("TOOL_STALL_TIMEOUT", "300")
+        issues = config_check._check_stall_hierarchy()
+        assert any("Bash timeout 600000ms" in i.message for i in issues)
 
     def test_max_age_below_tool_budget_warns(self, monkeypatch):
         monkeypatch.setenv("TOOL_STALL_TIMEOUT", "2400")
