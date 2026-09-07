@@ -128,8 +128,8 @@ Most settings are environment variables. Start with `.env.example`.
 | `MAX_CONCURRENT_TURNS_PER_USER` | Per-caller fairness hint keyed on `user` — not a security control; default `3` |
 | `SSE_KEEPALIVE_INTERVAL` | SSE keepalive comment interval; `0` disables it (and with it the stall guards below) |
 | `STREAM_STALL_TIMEOUT` | Silence budget for a streaming turn in seconds (no SDK chunk → `response.failed`, worker reclaimed); default `600` |
-| `TOOL_STALL_TIMEOUT` | Silence budget while a tool call is in flight; default: `MCP_TOOL_TIMEOUT`/1000 + 60 s when that is set, else same as `STREAM_STALL_TIMEOUT`. While a tool runs the gateway also emits `response.tool_progress` heartbeats |
-| `MCP_TOOL_TIMEOUT` | Claude CLI per-call tool watchdog in **milliseconds**, inherited by the CLI from this process env. Keep it below `TOOL_STALL_TIMEOUT` so a slow tool fails as a tool error the model can act on, not as a dead turn |
+| `TOOL_STALL_TIMEOUT` | Silence budget while a tool call is in flight; default: the larger CLI tool watchdog (`MCP_TOOL_TIMEOUT`, `BASH_MAX_TIMEOUT_MS`, else the CLI's 600 s Bash max) /1000 + 60 s — `660` with nothing set. `0` = same as `STREAM_STALL_TIMEOUT`. While a tool runs the gateway also emits `response.tool_progress` heartbeats |
+| `MCP_TOOL_TIMEOUT` / `BASH_MAX_TIMEOUT_MS` | Claude CLI per-call watchdogs in **milliseconds** (MCP tools / Bash), inherited by the CLI from this process env. Keep both below `TOOL_STALL_TIMEOUT` so a slow tool fails as a tool error the model can act on, not as a dead turn (`config_check` warns) |
 | `GATEWAY_HOST` | Host bind address; falls back to legacy `CLAUDE_WRAPPER_HOST` |
 | `USER_WORKSPACES_DIR` | Workspace base directory (system temp dir if unset; see Workspaces) |
 | `MCP_CONFIG` | Shared MCP server config |

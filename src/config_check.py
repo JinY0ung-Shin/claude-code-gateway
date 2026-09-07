@@ -445,10 +445,12 @@ def _int_env(name: str, default: int) -> int:
 def _check_stall_hierarchy() -> List[ConfigIssue]:
     """The silence budgets must nest, or a healthy long tool call gets killed.
 
-    Order (innermost first): the CLI's per-call ``MCP_TOOL_TIMEOUT`` (ms; a
-    breach returns a tool *error* and the turn survives) < the gateway's
-    in-flight-tool stall budget ``TOOL_STALL_TIMEOUT`` (defaults to that
-    watchdog + grace; a breach fails the whole turn) < ``ACTIVE_TURN_MAX_AGE``
+    Order (innermost first): the CLI's per-call watchdogs — ``MCP_TOOL_TIMEOUT``
+    for MCP tools and ``BASH_MAX_TIMEOUT_MS`` (else ``BASH_DEFAULT_TIMEOUT_MS``,
+    else the CLI's built-in 600000 ms) for Bash; a breach returns a tool *error*
+    and the turn survives — < the gateway's in-flight-tool stall budget
+    ``TOOL_STALL_TIMEOUT`` (defaults to the larger watchdog + grace; a breach
+    fails the whole turn) < ``ACTIVE_TURN_MAX_AGE``
     (the expiry sweep's no-progress valve; a breach reclaims the worker
     underneath a still-open stream). Both guards tick on the keepalive timer,
     so ``SSE_KEEPALIVE_INTERVAL=0`` disables them silently. Mirrors the
@@ -457,8 +459,14 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
     issues: List[ConfigIssue] = []
     keepalive = _int_env("SSE_KEEPALIVE_INTERVAL", 15)
     stream_stall = _int_env("STREAM_STALL_TIMEOUT", 600)
-    mcp_tool_ms = _int_env("MCP_TOOL_TIMEOUT", 0)
-    derived_tool_stall = -(-mcp_tool_ms // 1000) + 60 if mcp_tool_ms > 0 else 0
+    mcp_tool_ms = max(_int_env("MCP_TOOL_TIMEOUT", 0), 0)
+    bash_ms = (
+        max(_int_env("BASH_MAX_TIMEOUT_MS", 0), 0)
+        or max(_int_env("BASH_DEFAULT_TIMEOUT_MS", 0), 0)
+        or 600_000
+    )
+    watchdog_ms = max(mcp_tool_ms, bash_ms)
+    derived_tool_stall = -(-watchdog_ms // 1000) + 60
     tool_stall = _int_env("TOOL_STALL_TIMEOUT", derived_tool_stall)
     effective_tool_stall = tool_stall or stream_stall
     max_age = _int_env("ACTIVE_TURN_MAX_AGE", 1800)
@@ -472,15 +480,21 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
                 "timer and will never fire, so a wedged turn leaks its worker.",
             )
         )
-    if mcp_tool_ms > 0 and effective_tool_stall > 0 and mcp_tool_ms // 1000 >= effective_tool_stall:
+    if effective_tool_stall > 0 and watchdog_ms // 1000 >= effective_tool_stall:
+        culprit = (
+            f"MCP_TOOL_TIMEOUT={mcp_tool_ms}ms"
+            if mcp_tool_ms >= bash_ms
+            else f"Bash timeout {bash_ms}ms (BASH_MAX_TIMEOUT_MS / BASH_DEFAULT_TIMEOUT_MS "
+            "/ CLI default 600000)"
+        )
         issues.append(
             ConfigIssue(
                 "warning",
-                f"MCP_TOOL_TIMEOUT={mcp_tool_ms}ms is not below the in-flight tool stall "
-                f"budget ({effective_tool_stall}s): the gateway will fail the whole turn "
+                f"{culprit} is not below the in-flight tool stall budget "
+                f"({effective_tool_stall}s): the gateway will fail the whole turn "
                 "before the CLI can time the tool call out and hand the model a tool "
-                "error. Raise TOOL_STALL_TIMEOUT above MCP_TOOL_TIMEOUT/1000 (+ grace) "
-                "or lower MCP_TOOL_TIMEOUT.",
+                "error. Raise TOOL_STALL_TIMEOUT above the watchdog/1000 (+ grace) or "
+                "lower the watchdog.",
             )
         )
     if max_age > 0 and effective_tool_stall > 0 and max_age <= effective_tool_stall:

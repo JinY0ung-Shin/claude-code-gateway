@@ -65,8 +65,9 @@ uv run pytest --cov=src                            # with coverage
   `src/backends/claude/sdk_client.py` subclasses `ClaudeSDKClient` to surface them; the stream
   loop turns them (and its own keepalive-tick heartbeat for in-flight tools) into
   `response.tool_progress`, and the stall guard uses `TOOL_STALL_TIMEOUT` while a tool is
-  outstanding. Keep `MCP_TOOL_TIMEOUT/1000 < TOOL_STALL_TIMEOUT < ACTIVE_TURN_MAX_AGE`
-  (`config_check` warns). Delete the subclass the day the SDK grows its own type.
+  outstanding — its default clears the larger CLI watchdog (`MCP_TOOL_TIMEOUT`,
+  `BASH_MAX_TIMEOUT_MS`/CLI 600 s Bash max) + 60 s; keep
+  `watchdog/1000 < TOOL_STALL_TIMEOUT < ACTIVE_TURN_MAX_AGE` (`config_check` warns). Delete the subclass the day the SDK grows its own type.
 
 ## API Compatibility Boundaries
 

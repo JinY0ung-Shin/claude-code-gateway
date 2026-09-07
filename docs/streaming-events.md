@@ -459,7 +459,7 @@ These events are controlled by:
 | Env var | Default | Effect |
 |---------|---------|--------|
 | `STREAM_TOOL_PROGRESS` | `true` | Emit `response.tool_use_started` and `response.tool_progress` |
-| `TOOL_STALL_TIMEOUT` | derived | Silence budget while a tool call is in flight (see `.env.example`); heartbeats ride `SSE_KEEPALIVE_INTERVAL` |
+| `TOOL_STALL_TIMEOUT` | derived (660 s) | Silence budget while a tool call is in flight: larger of `MCP_TOOL_TIMEOUT` / Bash max + 60 s (see `.env.example`); heartbeats ride `SSE_KEEPALIVE_INTERVAL` |
 | `STREAM_HOOK_EVENTS` | `true` | Enable SDK `include_hook_events`; forward `response.hook_event` |
 | `STREAM_COMPACTION_EVENTS` | `true` | Forward `response.compaction` |
 | `STREAM_LOCAL_COMMAND_OUTPUT` | `true` | Forward `response.local_command_output` |
