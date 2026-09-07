@@ -64,10 +64,14 @@ uv run pytest --cov=src                            # with coverage
   `None`), so a long MCP call looks like a wedged turn to everything downstream.
   `src/backends/claude/sdk_client.py` subclasses `ClaudeSDKClient` to surface them; the stream
   loop turns them (and its own keepalive-tick heartbeat for in-flight tools) into
-  `response.tool_progress`, and the stall guard uses `TOOL_STALL_TIMEOUT` while a tool is
-  outstanding — its default clears the larger CLI watchdog (`MCP_TOOL_TIMEOUT`,
-  `BASH_MAX_TIMEOUT_MS`/CLI 600 s Bash max) + 60 s; keep
-  `watchdog/1000 < TOOL_STALL_TIMEOUT < ACTIVE_TURN_MAX_AGE` (`config_check` warns). Delete the subclass the day the SDK grows its own type.
+  `response.tool_progress`. The gateway owns the effective MCP ceiling: unset
+  `MCP_TOOL_TIMEOUT` is injected as 600000 ms into Claude children, and oversized
+  per-server MCP `timeout` values are clamped to that ceiling. `TOOL_STALL_TIMEOUT`
+  defaults above the larger effective MCP/Bash watchdog by 60 s. The required order is
+  `watchdog/1000 < TOOL_STALL_TIMEOUT < ACTIVE_TURN_MAX_AGE`; either inversion is a
+  startup `ConfigIssue(error)` and `run_startup_config_check()` refuses to start unless
+  the operator explicitly sets `SKIP_CONFIG_CHECK=true`. Delete the subclass the day the
+  SDK grows its own type.
 
 ## API Compatibility Boundaries
 
