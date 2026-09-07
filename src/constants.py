@@ -222,6 +222,12 @@ TOOL_STALL_GRACE_SECONDS = 60
 # using the default as the ceiling would recreate the very inversion this
 # budget exists to prevent (review on #182).
 CLI_BASH_MAX_TIMEOUT_MS = 600_000
+# Claude Code's upstream MCP default is intentionally enormous. The gateway
+# instead owns a bounded product default so its whole-turn stall guard can sit
+# *outside* the real tool watchdog. This value is injected into the process env
+# when the operator did not provide a positive MCP_TOOL_TIMEOUT, so every Claude
+# child inherits the same ceiling the gateway uses for derivation.
+GATEWAY_MCP_TOOL_TIMEOUT_DEFAULT_MS = 600_000
 
 
 def _positive_ms_env(name: str) -> int:
@@ -236,20 +242,42 @@ def _positive_ms_env(name: str) -> int:
     return ms if ms > 0 else 0
 
 
+def effective_mcp_tool_timeout_ms() -> int:
+    """Gateway-owned effective MCP watchdog ceiling in milliseconds.
+
+    Claude Code's unset MCP timeout is far larger than the gateway's worker
+    liveness budgets, so leaving it implicit makes a healthy long MCP call look
+    stalled to the gateway first. The gateway therefore owns a bounded default;
+    operators can raise it explicitly, in which case the derived stall budget
+    and config checker follow the same value.
+    """
+    return _positive_ms_env("MCP_TOOL_TIMEOUT") or GATEWAY_MCP_TOOL_TIMEOUT_DEFAULT_MS
+
+
+def _ensure_mcp_tool_timeout_env() -> int:
+    """Install the gateway-owned MCP ceiling into the inherited child env."""
+    value = effective_mcp_tool_timeout_ms()
+    if _positive_ms_env("MCP_TOOL_TIMEOUT") <= 0:
+        os.environ["MCP_TOOL_TIMEOUT"] = str(value)
+    return value
+
+
+# Claude Agent SDK subprocesses inherit the gateway process environment. Make
+# the policy real at runtime, not merely a number used by the stall derivation.
+EFFECTIVE_MCP_TOOL_TIMEOUT_MS = _ensure_mcp_tool_timeout_env()
+
+
 def cli_tool_watchdog_ms() -> int:
     """The longest a CLI tool call may legitimately stay silent, in milliseconds.
 
-    Two per-call watchdogs bound that silence, both inherited by the CLI from
-    this process env: ``MCP_TOOL_TIMEOUT`` for MCP tools (no known CLI default,
-    so only counted when set) and ``BASH_MAX_TIMEOUT_MS`` for the Bash tool
-    (else the CLI's built-in max — never ``BASH_DEFAULT_TIMEOUT_MS``, which is
-    a per-call default a call can exceed up to the max). The budget must clear
-    the larger one: TaskCreate is instant and subagents keep streaming, but a
-    silent Bash job or a slow MCP server both look identical to a wedge until
-    their own watchdog speaks.
+    MCP is bounded by the gateway-owned effective ``MCP_TOOL_TIMEOUT`` above;
+    Bash is bounded by ``BASH_MAX_TIMEOUT_MS`` or the CLI's built-in 600000 ms.
+    The budget must clear the larger one: TaskCreate is instant and subagents
+    keep streaming, but a silent Bash job or a slow MCP server both look
+    identical to a wedge until their own watchdog speaks.
     """
     bash_ms = _positive_ms_env("BASH_MAX_TIMEOUT_MS") or CLI_BASH_MAX_TIMEOUT_MS
-    return max(_positive_ms_env("MCP_TOOL_TIMEOUT"), bash_ms)
+    return max(effective_mcp_tool_timeout_ms(), bash_ms)
 
 
 def _tool_stall_timeout_default() -> int:
@@ -268,8 +296,8 @@ def _tool_stall_timeout_default() -> int:
 
 # Silence budget while a leader-level tool call is outstanding (tool_use seen,
 # no tool_result yet). ``TOOL_STALL_TIMEOUT`` overrides; unset → derived from
-# the CLI watchdogs (see above; 660 s with nothing else set); 0 → same as
-# STREAM_STALL_TIMEOUT. While a tool is in flight the gateway also emits
+# the CLI watchdogs (see above; 660 s with default MCP/Bash ceilings); 0 → same
+# as STREAM_STALL_TIMEOUT. While a tool is in flight the gateway also emits
 # ``response.tool_progress`` heartbeats on the keepalive tick so clients can
 # tell "tool still running" from "stream dead". Requires
 # SSE_KEEPALIVE_INTERVAL > 0 like the stall guard itself.
