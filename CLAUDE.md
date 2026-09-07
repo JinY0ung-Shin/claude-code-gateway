@@ -60,6 +60,13 @@ uv run pytest --cov=src                            # with coverage
 - A turn cut off by the agentic limit is reported as `response.incomplete` with
   `incomplete_details.reason = "max_turns"`, not `response.failed`: the partial text is
   real work. `DEFAULT_MAX_TURNS` (40) has to accommodate subagent orchestration.
+- The pinned Python SDK **drops** the CLI's `tool_progress` frames (unknown message type →
+  `None`), so a long MCP call looks like a wedged turn to everything downstream.
+  `src/backends/claude/sdk_client.py` subclasses `ClaudeSDKClient` to surface them; the stream
+  loop turns them (and its own keepalive-tick heartbeat for in-flight tools) into
+  `response.tool_progress`, and the stall guard uses `TOOL_STALL_TIMEOUT` while a tool is
+  outstanding. Keep `MCP_TOOL_TIMEOUT/1000 < TOOL_STALL_TIMEOUT < ACTIVE_TURN_MAX_AGE`
+  (`config_check` warns). Delete the subclass the day the SDK grows its own type.
 
 ## API Compatibility Boundaries
 

@@ -126,7 +126,10 @@ Most settings are environment variables. Start with `.env.example`.
 | `SESSION_EVICTION_MIN_IDLE_SECONDS` | Sessions accessed within this window are never evicted (thrash guard); default `60`, clamped to ≥1 |
 | `MAX_CONCURRENT_TURNS` | Agent turns allowed to run simultaneously; default `8` |
 | `MAX_CONCURRENT_TURNS_PER_USER` | Per-caller fairness hint keyed on `user` — not a security control; default `3` |
-| `SSE_KEEPALIVE_INTERVAL` | SSE keepalive comment interval; `0` disables it |
+| `SSE_KEEPALIVE_INTERVAL` | SSE keepalive comment interval; `0` disables it (and with it the stall guards below) |
+| `STREAM_STALL_TIMEOUT` | Silence budget for a streaming turn in seconds (no SDK chunk → `response.failed`, worker reclaimed); default `600` |
+| `TOOL_STALL_TIMEOUT` | Silence budget while a tool call is in flight; default: `MCP_TOOL_TIMEOUT`/1000 + 60 s when that is set, else same as `STREAM_STALL_TIMEOUT`. While a tool runs the gateway also emits `response.tool_progress` heartbeats |
+| `MCP_TOOL_TIMEOUT` | Claude CLI per-call tool watchdog in **milliseconds**, inherited by the CLI from this process env. Keep it below `TOOL_STALL_TIMEOUT` so a slow tool fails as a tool error the model can act on, not as a dead turn |
 | `GATEWAY_HOST` | Host bind address; falls back to legacy `CLAUDE_WRAPPER_HOST` |
 | `USER_WORKSPACES_DIR` | Workspace base directory (system temp dir if unset; see Workspaces) |
 | `MCP_CONFIG` | Shared MCP server config |

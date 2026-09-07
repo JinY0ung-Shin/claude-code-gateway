@@ -432,6 +432,70 @@ def _check_claude_settings_env() -> List[ConfigIssue]:
     return issues
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except ValueError:
+        return default
+
+
+def _check_stall_hierarchy() -> List[ConfigIssue]:
+    """The silence budgets must nest, or a healthy long tool call gets killed.
+
+    Order (innermost first): the CLI's per-call ``MCP_TOOL_TIMEOUT`` (ms; a
+    breach returns a tool *error* and the turn survives) < the gateway's
+    in-flight-tool stall budget ``TOOL_STALL_TIMEOUT`` (defaults to that
+    watchdog + grace; a breach fails the whole turn) < ``ACTIVE_TURN_MAX_AGE``
+    (the expiry sweep's no-progress valve; a breach reclaims the worker
+    underneath a still-open stream). Both guards tick on the keepalive timer,
+    so ``SSE_KEEPALIVE_INTERVAL=0`` disables them silently. Mirrors the
+    derivation in ``src.constants`` with os.environ only (early-import rule).
+    """
+    issues: List[ConfigIssue] = []
+    keepalive = _int_env("SSE_KEEPALIVE_INTERVAL", 15)
+    stream_stall = _int_env("STREAM_STALL_TIMEOUT", 600)
+    mcp_tool_ms = _int_env("MCP_TOOL_TIMEOUT", 0)
+    derived_tool_stall = -(-mcp_tool_ms // 1000) + 60 if mcp_tool_ms > 0 else 0
+    tool_stall = _int_env("TOOL_STALL_TIMEOUT", derived_tool_stall)
+    effective_tool_stall = tool_stall or stream_stall
+    max_age = _int_env("ACTIVE_TURN_MAX_AGE", 1800)
+
+    if keepalive <= 0 and (stream_stall > 0 or tool_stall > 0):
+        issues.append(
+            ConfigIssue(
+                "warning",
+                "SSE_KEEPALIVE_INTERVAL=0 disables the stall guards: "
+                "STREAM_STALL_TIMEOUT / TOOL_STALL_TIMEOUT tick on the keepalive "
+                "timer and will never fire, so a wedged turn leaks its worker.",
+            )
+        )
+    if mcp_tool_ms > 0 and effective_tool_stall > 0 and mcp_tool_ms // 1000 >= effective_tool_stall:
+        issues.append(
+            ConfigIssue(
+                "warning",
+                f"MCP_TOOL_TIMEOUT={mcp_tool_ms}ms is not below the in-flight tool stall "
+                f"budget ({effective_tool_stall}s): the gateway will fail the whole turn "
+                "before the CLI can time the tool call out and hand the model a tool "
+                "error. Raise TOOL_STALL_TIMEOUT above MCP_TOOL_TIMEOUT/1000 (+ grace) "
+                "or lower MCP_TOOL_TIMEOUT.",
+            )
+        )
+    if max_age > 0 and effective_tool_stall > 0 and max_age <= effective_tool_stall:
+        issues.append(
+            ConfigIssue(
+                "warning",
+                f"ACTIVE_TURN_MAX_AGE={max_age}s is not above the tool stall budget "
+                f"({effective_tool_stall}s): the expiry sweep can reclaim a worker "
+                "while a legitimately slow tool call is still within budget. Set "
+                "ACTIVE_TURN_MAX_AGE above TOOL_STALL_TIMEOUT / STREAM_STALL_TIMEOUT.",
+            )
+        )
+    return issues
+
+
 def check_config() -> List[ConfigIssue]:
     """Inspect the environment and return all detected configuration issues."""
     backends = _enabled_backends()
@@ -447,6 +511,7 @@ def check_config() -> List[ConfigIssue]:
     issues.extend(_check_mcp_manifest())
     issues.extend(_check_mcp_server_env())
     issues.extend(_check_claude_settings_env())
+    issues.extend(_check_stall_hierarchy())
     return issues
 
 

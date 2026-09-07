@@ -495,6 +495,47 @@ def make_tool_use_started_response_sse(
     return f"event: {event_type}\ndata: {_sse_dumps(data)}\n\n"
 
 
+def make_tool_progress_response_sse(
+    tool_use_id: str,
+    name: str,
+    elapsed_seconds: int,
+    *,
+    source: str,
+    sequence_number: int = 0,
+    parent_tool_use_id: Optional[str] = None,
+    message: Optional[str] = None,
+) -> str:
+    """Build an SSE line saying a tool call is still running.
+
+    Two sources share one event so a client renders them the same way:
+
+    * ``source="cli"`` — the CLI's own ``tool_progress`` frame (``mcp_progress``,
+      ``bash_progress`` …). The pinned Python SDK drops these as an unknown
+      message type; the gateway's SDK client subclass surfaces them.
+    * ``source="gateway"`` — a gateway-authored heartbeat, emitted on the SSE
+      keepalive tick while a tool_use has no tool_result yet. It tells the
+      client the silence is a tool running, not a dead stream, and how long it
+      has been running (gateway-observed).
+
+    ``elapsed_seconds`` is an integer so clients can show it as-is; ``message``
+    is optional progress text the CLI attached (kept verbatim, may be absent).
+    """
+    event_type = "response.tool_progress"
+    data: Dict[str, Any] = {
+        "type": event_type,
+        "tool_use_id": tool_use_id or "",
+        "name": name or "",
+        "elapsed_seconds": int(elapsed_seconds),
+        "source": source,
+        "sequence_number": sequence_number,
+    }
+    if parent_tool_use_id:
+        data["parent_tool_use_id"] = parent_tool_use_id
+    if message:
+        data["message"] = message
+    return f"event: {event_type}\ndata: {_sse_dumps(data)}\n\n"
+
+
 def make_tool_use_response_sse(
     tool_block: Dict[str, Any],
     *,

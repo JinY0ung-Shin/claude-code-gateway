@@ -208,6 +208,45 @@ SSE_KEEPALIVE_INTERVAL = parse_int_env("SSE_KEEPALIVE_INTERVAL", 15)
 # requires SSE_KEEPALIVE_INTERVAL > 0. Set to 0 to disable.
 STREAM_STALL_TIMEOUT_SECONDS = parse_int_env("STREAM_STALL_TIMEOUT", 600)
 
+
+def _tool_stall_timeout_default() -> int:
+    """Default silence budget while a tool call is in flight (seconds).
+
+    A slow MCP tool is *silence* to the stall guard above — nothing distinguishes
+    "the CLI is waiting on a tool that will answer in 12 minutes" from "the CLI
+    is wedged". The CLI has its own per-call watchdog, ``MCP_TOOL_TIMEOUT``
+    (milliseconds, inherited from this process env), and when it fires the
+    model receives a tool *error* and the turn goes on. That is the outcome we
+    want for a slow tool, so the tool budget defaults to the CLI's watchdog plus
+    a grace period: the CLI times the call out first, and the gateway kills the
+    whole turn only when even that watchdog failed to fire. With no
+    ``MCP_TOOL_TIMEOUT`` set the CLI default is unknown, so ``0`` = fall back to
+    STREAM_STALL_TIMEOUT.
+    """
+    raw = (os.getenv("MCP_TOOL_TIMEOUT") or "").strip()
+    if not raw:
+        return 0
+    try:
+        ms = int(float(raw))
+    except ValueError:
+        return 0
+    if ms <= 0:
+        return 0
+    return -(-ms // 1000) + TOOL_STALL_GRACE_SECONDS
+
+
+# Grace added on top of the CLI's MCP_TOOL_TIMEOUT so the CLI watchdog fires
+# first (tool error → turn survives) and the gateway's whole-turn stall kill is
+# the last resort, not the first.
+TOOL_STALL_GRACE_SECONDS = 60
+# Silence budget while a leader-level tool call is outstanding (tool_use seen,
+# no tool_result yet). ``TOOL_STALL_TIMEOUT`` overrides; unset → derived from
+# MCP_TOOL_TIMEOUT (see above); 0 → same as STREAM_STALL_TIMEOUT. While a tool
+# is in flight the gateway also emits ``response.tool_progress`` heartbeats on
+# the keepalive tick so clients can tell "tool still running" from "stream
+# dead". Requires SSE_KEEPALIVE_INTERVAL > 0 like the stall guard itself.
+TOOL_STALL_TIMEOUT_SECONDS = parse_int_env("TOOL_STALL_TIMEOUT", _tool_stall_timeout_default())
+
 # Safety net behind the stall guard, enforced by the expiry sweep: a session
 # whose active turn has made NO PROGRESS (no real SDK chunk, stamped by the
 # route's chunk wrapper) for this long stops pinning itself and is reclaimed

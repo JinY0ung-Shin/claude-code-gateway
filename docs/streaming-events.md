@@ -37,6 +37,7 @@ response.content_part.added
 response.output_text.delta      # zero or more
 response.output_text.annotation.added  # zero or more (citations)
 response.tool_use_started       # zero or more (liveness; precedes response.tool_use)
+response.tool_progress          # zero or more (liveness; while a tool call is running)
 response.tool_use               # zero or more
 response.tool_result            # zero or more
 response.task_started           # zero or more
@@ -339,6 +340,43 @@ JSON arguments finish streaming. The matching `response.tool_use` (same
 }
 ```
 
+`response.tool_progress` says a tool call is *still running*. It fills the one
+silence the other liveness events cannot: between `response.tool_use` and its
+`response.tool_result`, a slow MCP server or a minutes-long Bash job produces no
+SDK output at all. Two sources share the event so a client renders them alike:
+
+- `source: "gateway"` — a heartbeat the gateway emits on every SSE keepalive
+  tick while a tool_use has no tool_result yet. `elapsed_seconds` is
+  gateway-observed (since the completed tool_use arrived). This is what lets a
+  client tell "tool still running" from "stream dead" without any client-side
+  heuristics.
+- `source: "cli"` — the CLI's own `tool_progress` frame (`mcp_progress`,
+  `bash_progress`, …), forwarded when the CLI emits one. The pinned Python SDK
+  drops these as an unknown message type; the gateway's SDK client subclass
+  surfaces them. `message` is present only when the CLI attached progress text.
+
+Heartbeats are advisory and never reset the stall guard; a CLI frame is real
+SDK output and does. The event is keyed by `tool_use_id` like `tool_result`, and
+`parent_tool_use_id` marks a subagent's tool (gated by `SUBAGENT_STREAM_PROGRESS`).
+
+```json
+{
+  "type": "response.tool_progress",
+  "tool_use_id": "toolu_01ABC123",
+  "name": "mcp__confluence__search",
+  "elapsed_seconds": 45,
+  "source": "gateway",
+  "sequence_number": 7
+}
+```
+
+When the silence outlives the budget the turn ends with `response.failed` whose
+`error.message` starts with `Turn stalled:` and names the in-flight tool
+(`… tool call produced no output for 960s (TOOL_STALL_TIMEOUT) — mcp__x__y
+(toolu_…) 961s …`), so a client can say "tool X ran too long" rather than
+"connection lost". See `TOOL_STALL_TIMEOUT` / `MCP_TOOL_TIMEOUT` in
+`.env.example` for the budget hierarchy.
+
 `response.hook_event` mirrors the SDK's hook lifecycle (PreToolUse, PostToolUse,
 Stop, …) so a UI can show "running <tool>…" / "<tool> finished". `phase` is
 `hook_started` or `hook_response`; `outcome` is present on `hook_response`.
@@ -420,15 +458,16 @@ These events are controlled by:
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `STREAM_TOOL_PROGRESS` | `true` | Emit `response.tool_use_started` |
+| `STREAM_TOOL_PROGRESS` | `true` | Emit `response.tool_use_started` and `response.tool_progress` |
+| `TOOL_STALL_TIMEOUT` | derived | Silence budget while a tool call is in flight (see `.env.example`); heartbeats ride `SSE_KEEPALIVE_INTERVAL` |
 | `STREAM_HOOK_EVENTS` | `true` | Enable SDK `include_hook_events`; forward `response.hook_event` |
 | `STREAM_COMPACTION_EVENTS` | `true` | Forward `response.compaction` |
 | `STREAM_LOCAL_COMMAND_OUTPUT` | `true` | Forward `response.local_command_output` |
 
 Subagent-originated liveness events (with `parent_tool_use_id`) follow the same
 subagent gates as their block type: `response.tool_use_started` respects
-`SUBAGENT_STREAM_TOOL_BLOCKS`; `response.hook_event` respects
-`SUBAGENT_STREAM_PROGRESS`.
+`SUBAGENT_STREAM_TOOL_BLOCKS`; `response.hook_event` and `response.tool_progress`
+respect `SUBAGENT_STREAM_PROGRESS`.
 
 ## AskUserQuestion Pauses
 
