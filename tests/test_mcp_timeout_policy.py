@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from src import config_check, constants, mcp_config
 
 
@@ -107,7 +109,7 @@ def test_config_check_matches_runtime_effective_watchdog(monkeypatch):
     assert config_check._check_stall_hierarchy() == []
 
 
-def test_config_check_warns_when_effective_budget_cannot_fit_under_max_age(monkeypatch):
+def test_config_check_rejects_when_effective_budget_cannot_fit_under_max_age(monkeypatch):
     monkeypatch.setenv("MCP_TOOL_TIMEOUT", "1800000")
     monkeypatch.delenv("BASH_MAX_TIMEOUT_MS", raising=False)
     monkeypatch.delenv("TOOL_STALL_TIMEOUT", raising=False)
@@ -116,4 +118,21 @@ def test_config_check_warns_when_effective_budget_cannot_fit_under_max_age(monke
     issues = config_check._check_stall_hierarchy()
 
     assert constants._tool_stall_timeout_default() == 1860
-    assert any("ACTIVE_TURN_MAX_AGE=1800s" in issue.message for issue in issues)
+    matching = [i for i in issues if "ACTIVE_TURN_MAX_AGE=1800s" in i.message]
+    assert matching and matching[0].severity == "error"
+    with pytest.raises(RuntimeError, match="Refusing to start"):
+        config_check.run_startup_config_check()
+
+
+def test_config_check_rejects_tool_stall_not_above_watchdog(monkeypatch):
+    monkeypatch.setenv("MCP_TOOL_TIMEOUT", "600000")
+    monkeypatch.delenv("BASH_MAX_TIMEOUT_MS", raising=False)
+    monkeypatch.setenv("TOOL_STALL_TIMEOUT", "600")
+    monkeypatch.setenv("ACTIVE_TURN_MAX_AGE", "1800")
+
+    issues = config_check._check_stall_hierarchy()
+
+    matching = [i for i in issues if "not below the in-flight tool stall budget" in i.message]
+    assert matching and matching[0].severity == "error"
+    with pytest.raises(RuntimeError, match="Refusing to start"):
+        config_check.run_startup_config_check()
