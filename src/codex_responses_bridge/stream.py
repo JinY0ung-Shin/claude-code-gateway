@@ -357,7 +357,23 @@ class _StreamState:
         for tc in tool_calls:
             if not isinstance(tc, dict):
                 raise BridgeCapabilityError("streamed tool_call must be an object")
+            # ``index`` is the state-identity key; a present malformed value must
+            # fail through the capability-error path, never alias into 0 or raise
+            # a raw TypeError when used as a dict key.
             index = tc.get("index", 0)
+            if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+                raise BridgeCapabilityError(
+                    "streamed tool_call 'index' must be a non-negative integer, got "
+                    f"{index!r}"
+                )
+            if "type" in tc and tc["type"] is not None and tc["type"] != "function":
+                # A present tool-call kind other than 'function' would be
+                # reinterpreted as a function call; refuse (omission stays
+                # provider-compatible).
+                raise BridgeCapabilityError(
+                    f"streamed tool_call 'type' {tc['type']!r} is not 'function'; "
+                    "refusing rather than reinterpreting it as a function call"
+                )
             fn = tc.get("function")
             if fn is None:
                 fn = {}
@@ -366,8 +382,27 @@ class _StreamState:
                     "streamed tool_call 'function' must be an object, got "
                     f"{type(fn).__name__}"
                 )
-            name = fn.get("name")
-            upstream_id = tc.get("id") if isinstance(tc.get("id"), str) else None
+            # Present-vs-missing identity: a MISSING name may stay pending (it can
+            # arrive on a later fragment); a PRESENT malformed one fails now. A
+            # MISSING id keeps the documented synthesize-once compatibility; a
+            # PRESENT malformed id is refused, never repaired into a synthesized id.
+            name = None
+            if "name" in fn and fn["name"] is not None:
+                if not isinstance(fn["name"], str) or not fn["name"]:
+                    raise BridgeCapabilityError(
+                        "streamed tool_call 'function.name' must be a non-empty "
+                        f"string when present, got {fn['name']!r}"
+                    )
+                name = fn["name"]
+            if "id" in tc and tc["id"] is not None:
+                if not isinstance(tc["id"], str) or not tc["id"]:
+                    raise BridgeCapabilityError(
+                        "streamed tool_call 'id' must be a non-empty string when "
+                        f"present, got {tc['id']!r}"
+                    )
+                upstream_id = tc["id"]
+            else:
+                upstream_id = None
             existing = self.tools.get(index)
             # A non-empty id on an existing index that differs from the stored
             # upstream id means a NEW call reusing the slot: close the first so
@@ -483,6 +518,19 @@ class _StreamState:
             )
         if not choices:
             return []  # the valid trailing usage-only shape
+        # Terminal evidence is LATCHED: once a recognized finish was observed, the
+        # response's semantic output and terminal classification are immutable.
+        # Only a usage-bearing trailer with empty/absent choices may follow (that
+        # is handled above); a later non-empty choice -- more content/tool args, or
+        # a second finish_reason that would reclassify the turn -- is refused rather
+        # than allowed to mutate an already-finished response.
+        if self.terminal_seen:
+            raise BridgeCapabilityError(
+                "chat stream produced a non-empty choice after a recognized "
+                "terminal finish_reason; the response is already finished and its "
+                "output/classification are immutable -- refusing rather than "
+                "mutating a completed turn"
+            )
         if len(choices) > 1:
             raise BridgeCapabilityError(
                 "chat stream chunk carries multiple choices (n>1); Responses "

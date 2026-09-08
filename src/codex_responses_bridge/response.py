@@ -174,14 +174,27 @@ def _function_call_item(
     """
     if not isinstance(tc, dict):
         raise BridgeCapabilityError("chat tool_call must be an object")
+    if "type" in tc and tc["type"] is not None and tc["type"] != "function":
+        raise BridgeCapabilityError(
+            f"chat tool_call 'type' {tc['type']!r} is not 'function'; refusing "
+            "rather than reinterpreting it as a function call"
+        )
     fn = tc.get("function")
     if not isinstance(fn, dict):
         raise BridgeCapabilityError("chat tool_call is missing its 'function' object")
     name = fn.get("name")
     if not isinstance(name, str) or not name:
         raise BridgeCapabilityError("chat tool_call function is missing its name")
-    call_id = tc.get("id")
-    if not isinstance(call_id, str) or not call_id:
+    # A MISSING id keeps the synthesize-once compatibility; a PRESENT malformed
+    # id is refused, never repaired into a synthesized one.
+    if "id" in tc and tc["id"] is not None:
+        call_id = tc["id"]
+        if not isinstance(call_id, str) or not call_id:
+            raise BridgeCapabilityError(
+                "chat tool_call 'id' must be a non-empty string when present, got "
+                f"{call_id!r}"
+            )
+    else:
         call_id = _new_call_id()
     args = fn.get("arguments")
     if not isinstance(args, str):

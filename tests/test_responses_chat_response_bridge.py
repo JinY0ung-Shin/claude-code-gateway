@@ -1069,3 +1069,289 @@ def test_stream_created_object_omits_usage():
         chat_stream_to_responses_events([_text_chunk("x", "stop")], response_id="r")
     )
     assert "usage" not in events[0]["response"]
+
+
+# =====================================================================
+# Round-2 regression matrix
+# =====================================================================
+
+# -- terminal finish is latched; output immutable after it (finding 1) ------
+
+
+def test_stream_text_after_terminal_is_refused():
+    chunks = [
+        {"choices": [{"delta": {"content": "safe"}, "finish_reason": "stop"}]},
+        {"choices": [{"delta": {"content": "MUTATED"}, "finish_reason": None}]},
+    ]
+    with pytest.raises(BridgeCapabilityError):
+        list(chat_stream_to_responses_events(chunks, response_id="r"))
+
+
+def test_stream_tool_args_after_terminal_is_refused():
+    chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c0",
+                                "function": {"name": "a", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [{"index": 0, "function": {"arguments": "more"}}]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+    ]
+    with pytest.raises(BridgeCapabilityError):
+        list(chat_stream_to_responses_events(chunks, response_id="r"))
+
+
+@pytest.mark.parametrize("second", ["length", "stop"])
+def test_stream_second_terminal_reason_is_refused(second):
+    first = "stop" if second == "length" else "length"
+    chunks = [
+        {"choices": [{"delta": {"content": "x"}, "finish_reason": first}]},
+        {"choices": [{"delta": {}, "finish_reason": second}]},
+    ]
+    with pytest.raises(BridgeCapabilityError):
+        list(chat_stream_to_responses_events(chunks, response_id="r"))
+
+
+def test_stream_empty_choices_trailer_after_terminal_is_accepted():
+    chunks = [
+        _text_chunk("done", "stop"),
+        {"choices": []},  # empty trailer, no usage
+    ]
+    events = list(chat_stream_to_responses_events(chunks, response_id="r"))
+    assert events[-1]["type"] == "response.completed"
+    assert events[-1]["response"]["output"][0]["content"][0]["text"] == "done"
+
+
+# -- tool identity: present malformed is refused, missing may default (finding 2) --
+
+
+@pytest.mark.parametrize("bad_id", [123, [], {}, ""])
+def test_stream_present_malformed_tool_id_is_refused(bad_id):
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": bad_id,
+                                            "function": {
+                                                "name": "a",
+                                                "arguments": "{}",
+                                            },
+                                        }
+                                    ]
+                                },
+                                "finish_reason": None,
+                            }
+                        ]
+                    }
+                ],
+                response_id="r",
+            )
+        )
+
+
+@pytest.mark.parametrize("bad_name", [123, False, ""])
+def test_stream_present_malformed_tool_name_is_refused(bad_name):
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "c0",
+                                            "function": {
+                                                "name": bad_name,
+                                                "arguments": "{}",
+                                            },
+                                        }
+                                    ]
+                                },
+                                "finish_reason": None,
+                            }
+                        ]
+                    }
+                ],
+                response_id="r",
+            )
+        )
+
+
+@pytest.mark.parametrize("bad_index", [[], {}, -1, 1.5, True])
+def test_stream_malformed_tool_index_is_refused(bad_index):
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": bad_index,
+                                            "id": "c0",
+                                            "function": {
+                                                "name": "a",
+                                                "arguments": "{}",
+                                            },
+                                        }
+                                    ]
+                                },
+                                "finish_reason": None,
+                            }
+                        ]
+                    }
+                ],
+                response_id="r",
+            )
+        )
+
+
+def test_stream_present_non_function_tool_type_is_refused():
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "c0",
+                                            "type": "custom",
+                                            "function": {
+                                                "name": "a",
+                                                "arguments": "{}",
+                                            },
+                                        }
+                                    ]
+                                },
+                                "finish_reason": None,
+                            }
+                        ]
+                    }
+                ],
+                response_id="r",
+            )
+        )
+
+
+def test_stream_missing_tool_id_synthesizes_once():
+    chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"name": "a", "arguments": "{}"}}
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+    ]
+    events = list(chat_stream_to_responses_events(chunks, response_id="r"))
+    call = events[-1]["response"]["output"][0]
+    assert call["call_id"].startswith("call_")
+    assert call["id"] == f"fc_{call['call_id']}"
+
+
+def test_stream_present_function_type_is_accepted():
+    chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c0",
+                                "type": "function",
+                                "function": {"name": "a", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+    ]
+    events = list(chat_stream_to_responses_events(chunks, response_id="r"))
+    assert events[-1]["response"]["output"][0]["call_id"] == "c0"
+
+
+# -- non-streaming tool identity parity (finding 2) -------------------------
+
+
+def _one_tool_response(tool_call):
+    return {
+        "choices": [
+            {"finish_reason": "tool_calls", "message": {"tool_calls": [tool_call]}}
+        ]
+    }
+
+
+def test_nonstreaming_present_malformed_tool_id_is_refused():
+    for bad in (123, [], ""):
+        with pytest.raises(BridgeCapabilityError):
+            chat_response_to_responses_body(
+                _one_tool_response(
+                    {"id": bad, "function": {"name": "f", "arguments": "{}"}}
+                ),
+                response_id="r",
+            )
+
+
+def test_nonstreaming_present_non_function_type_is_refused():
+    with pytest.raises(BridgeCapabilityError):
+        chat_response_to_responses_body(
+            _one_tool_response(
+                {
+                    "id": "c1",
+                    "type": "custom",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
+            ),
+            response_id="r",
+        )
+
+
+def test_nonstreaming_missing_id_still_synthesizes():
+    out = chat_response_to_responses_body(
+        _one_tool_response({"function": {"name": "f", "arguments": "{}"}}),
+        response_id="r",
+    )
+    assert out["output"][0]["call_id"].startswith("call_")
