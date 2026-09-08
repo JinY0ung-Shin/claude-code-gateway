@@ -91,7 +91,9 @@ class TestDescribeSdkStreamError:
         from src.backends.claude.client import describe_sdk_stream_error
 
         text = describe_sdk_stream_error(_buffer_overflow_error())
-        assert "1200000 bytes, limit 1048576 bytes" in text
+        assert "1200000 characters, limit 1048576" in text
+        # The SDK's own message says "bytes"; the pinned SDK counts characters.
+        assert "not UTF-8 bytes" in text
         assert "tool result" in text
         assert "CLAUDE_MAX_BUFFER_SIZE" in text
         # The SDK's own wording reads like corrupt output; it must not lead.
@@ -106,7 +108,7 @@ class TestDescribeSdkStreamError:
             "JSON message exceeded maximum buffer size of 2097152 bytes",
             ValueError("no sizes here"),
         )
-        assert "limit 2097152 bytes" in describe_sdk_stream_error(exc)
+        assert "limit 2097152;" in describe_sdk_stream_error(exc)
 
     def test_other_json_decode_errors_pass_through(self):
         from claude_agent_sdk import CLIJSONDecodeError

@@ -80,7 +80,12 @@ uv run pytest --cov=src                            # with coverage
   slash-command preflight shares it, `describe_sdk_stream_error` rewrites the fatal
   `CLIJSONDecodeError` into actionable text (sizes + both remedies), and `_check_sdk_buffer`
   warns at startup on invalid or ≤ 1 MiB values. There is no gateway-side truncation: the frame
-  is rejected inside the SDK transport before any hook or handler can see it.
+  is rejected inside the SDK transport before any hook or handler can see it, so a result above
+  the limit still kills the turn (the pre-framing tool-result budget is #185). Unit caveat: the
+  pinned SDK counts decoded text **characters** (`len(str)` on a `TextReceiveStream`), not UTF-8
+  bytes, despite saying "bytes" (upstream #1165) — `tests/test_sdk_buffer_semantics.py` pins
+  this against the real transport reader so an SDK upgrade that flips the unit fails loudly;
+  update the docs/error text together with the pin when it does.
 
 ## API Compatibility Boundaries
 

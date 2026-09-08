@@ -234,9 +234,11 @@ GATEWAY_MCP_TOOL_TIMEOUT_DEFAULT_MS = 600_000
 # (SDK default 1 MiB). A tool result is one frame, so an MCP tool that returns
 # inline base64 thumbnails (#183) killed the turn with a fatal
 # "JSON message exceeded maximum buffer size" instead of handing the model a
-# tool error. Like the MCP watchdog above, the gateway owns a bounded product
-# default that is large enough for legitimate rich tool results; operators can
-# still raise or lower it with ``CLAUDE_MAX_BUFFER_SIZE``.
+# tool error. Like the MCP watchdog above, the gateway owns a product default
+# that is large enough for legitimate rich tool results; operators can still
+# raise or lower it with ``CLAUDE_MAX_BUFFER_SIZE``. It is a framing threshold,
+# not an exact memory quota: the pinned SDK counts decoded text CHARACTERS, not
+# UTF-8 bytes (see ``_get_max_buffer_size`` and tests/test_sdk_buffer_semantics.py).
 SDK_DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024
 GATEWAY_MAX_BUFFER_SIZE_DEFAULT = 16 * 1024 * 1024
 

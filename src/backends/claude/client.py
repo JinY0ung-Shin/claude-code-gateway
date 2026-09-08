@@ -195,17 +195,27 @@ def _get_setting_sources() -> List[Literal["user", "project", "local"]]:
 
 
 def _get_max_buffer_size() -> int:
-    """Return the effective limit for one JSON message on CLI stdout, in bytes.
+    """Return the effective framing limit for one JSON message on CLI stdout.
 
     The SDK frames CLI stdout one NDJSON message at a time and aborts the
     message reader — the whole turn fails with ``sdk_error`` — when a single
     frame exceeds ``max_buffer_size``. A tool result is one frame, so the SDK's
     own 1 MiB default is too small for MCP tools that legitimately return rich
     payloads (inline base64 thumbnails, large search hits; #183). The gateway
-    therefore owns a bounded product default (``GATEWAY_MAX_BUFFER_SIZE_DEFAULT``,
-    16 MiB) and always installs it. ``CLAUDE_MAX_BUFFER_SIZE`` (bytes) overrides
+    therefore owns a product default (``GATEWAY_MAX_BUFFER_SIZE_DEFAULT``,
+    16 Mi units) and always installs it. ``CLAUDE_MAX_BUFFER_SIZE`` overrides
     it in either direction; unset, empty or invalid (non-numeric / non-positive)
     values keep the gateway default, invalid ones with a warning.
+
+    Unit caveat: the pinned ``claude-agent-sdk`` (0.2.128) counts this limit in
+    Python ``str`` CHARACTERS of the decoded stdout text (``_LineFramer`` uses
+    ``len(chunk)`` on a ``TextReceiveStream``), although its own error text
+    says "bytes" (upstream anthropics/claude-agent-sdk-python#1165). ASCII and
+    base64 payloads are 1 char = 1 byte, so the #183 case is unaffected, but
+    multibyte UTF-8 text can occupy up to ~4x the nominal limit in real memory.
+    Treat it as a framing threshold, not an exact memory or security quota.
+    ``tests/test_sdk_buffer_semantics.py`` pins this so an SDK upgrade that
+    switches to encoded bytes shows up as a failing test, not a silent change.
     """
     raw = os.getenv("CLAUDE_MAX_BUFFER_SIZE")
     if raw is None or not raw.strip():
@@ -216,7 +226,7 @@ def _get_max_buffer_size() -> int:
         value = 0
     if value <= 0:
         logger.warning(
-            "Invalid CLAUDE_MAX_BUFFER_SIZE=%r; using the gateway default (%d bytes)",
+            "Invalid CLAUDE_MAX_BUFFER_SIZE=%r; using the gateway default (%d)",
             raw,
             GATEWAY_MAX_BUFFER_SIZE_DEFAULT,
         )
@@ -252,12 +262,15 @@ def describe_sdk_stream_error(exc: BaseException) -> str:
     ) or _BUFFER_OVERFLOW_SIZE_RE.search(line)
     if match:
         seen, limit = match.group(1), match.group(2)
-        sizes = f"{seen} bytes, limit {limit} bytes"
+        sizes = f"{seen} characters, limit {limit}"
     else:
-        sizes = f"limit {_get_max_buffer_size()} bytes"
+        sizes = f"limit {_get_max_buffer_size()}"
+    # The SDK reports these as bytes, but the pinned SDK counts str characters
+    # (see _get_max_buffer_size); say so rather than repeat the wrong unit.
     return (
         "Claude SDK stream aborted: a single CLI message exceeded the stdout "
-        f"framing limit ({sizes}). This is almost always one oversized tool "
+        f"framing limit ({sizes}; counted as text characters by the pinned SDK, "
+        "not UTF-8 bytes). This is almost always one oversized tool "
         "result (e.g. an MCP search tool returning inline base64 thumbnails); "
         "the SDK message reader cannot recover, so the turn failed. Narrow the "
         "tool call (fewer results, no inline images) or raise "

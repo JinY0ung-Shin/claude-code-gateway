@@ -518,11 +518,13 @@ def _check_sdk_buffer() -> List[ConfigIssue]:
     """``CLAUDE_MAX_BUFFER_SIZE`` bounds ONE CLI stdout message, tool results
     included; a breach is a fatal SDK reader error, not a tool error (#183).
 
-    Unset, the gateway installs its own 16 MiB product default
+    Unset, the gateway installs its own 16 Mi product default
     (``src.constants.GATEWAY_MAX_BUFFER_SIZE_DEFAULT``) instead of the SDK's
-    1 MiB. An invalid value silently falls back to that default, and a value at
-    or below the SDK's 1 MiB re-creates the oversized-tool-result failure the
-    default exists to prevent — both are worth a startup warning. Mirrors
+    1 Mi. An invalid value silently falls back to that default, and a value at
+    or below the SDK's 1 Mi re-creates the oversized-tool-result failure the
+    default exists to prevent — both are worth a startup warning. The unit is
+    decoded text characters in the pinned SDK, not bytes (see
+    ``_get_max_buffer_size``); the messages say so. Mirrors
     ``src.backends.claude.client._get_max_buffer_size`` with os.environ only
     (early-import rule).
     """
@@ -540,7 +542,7 @@ def _check_sdk_buffer() -> List[ConfigIssue]:
             ConfigIssue(
                 "warning",
                 f"CLAUDE_MAX_BUFFER_SIZE={raw!r} is not a positive integer; the "
-                f"gateway default ({gateway_default} bytes) applies.",
+                f"gateway default ({gateway_default}) applies.",
             )
         ]
     if value <= sdk_default:
@@ -548,10 +550,11 @@ def _check_sdk_buffer() -> List[ConfigIssue]:
             ConfigIssue(
                 "warning",
                 f"CLAUDE_MAX_BUFFER_SIZE={value} is at or below the Claude SDK's own "
-                f"{sdk_default}-byte default: any single tool result larger than "
-                "this (e.g. an MCP tool returning inline base64 images) aborts the "
-                "whole turn with sdk_error. Unset it to use the gateway default "
-                f"({gateway_default} bytes) or raise it.",
+                f"default of {sdk_default} (decoded text characters, not bytes, in "
+                "the pinned SDK): any single tool result larger than this (e.g. an "
+                "MCP tool returning inline base64 images) aborts the whole turn "
+                "with sdk_error. Unset it to use the gateway default "
+                f"({gateway_default}) or raise it.",
             )
         ]
     return []

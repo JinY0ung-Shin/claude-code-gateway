@@ -383,8 +383,9 @@ exceeds `CLAUDE_MAX_BUFFER_SIZE` (gateway default 16 MiB; the SDK alone stops at
 1 MiB). That is a fatal `response.failed` with `error.code = "sdk_error"`, not a
 tool error the model can react to, and its `error.message` starts with
 `Claude SDK stream aborted: a single CLI message exceeded the stdout framing
-limit (<seen> bytes, limit <limit> bytes)` and names both remedies (narrow the
-tool call, or raise `CLAUDE_MAX_BUFFER_SIZE`).
+limit (<seen> characters, limit <limit>; …)` and names both remedies (narrow the
+tool call, or raise `CLAUDE_MAX_BUFFER_SIZE`). The unit is decoded text
+characters in the pinned SDK, not UTF-8 bytes (see the README env table).
 
 `response.hook_event` mirrors the SDK's hook lifecycle (PreToolUse, PostToolUse,
 Stop, …) so a UI can show "running <tool>…" / "<tool> finished". `phase` is
