@@ -16,7 +16,7 @@ from typing import AsyncGenerator, Dict, Any, Literal, Optional, List, Union, ca
 from pathlib import Path
 import logging
 
-from claude_agent_sdk import query, ClaudeAgentOptions, ClaudeSDKClient
+from claude_agent_sdk import query, ClaudeAgentOptions
 from src.constants import DEFAULT_MAX_TURNS
 from claude_agent_sdk.types import (
     CanUseToolShadowedWarning,
@@ -53,6 +53,12 @@ from src.backends.claude.constants import (
     FORCE_FOREGROUND_SUBAGENTS,
     SUBAGENT_TOOL_NAMES,
 )
+# The gateway's SDK client (surfaces the CLI's tool_progress frames the pinned
+# SDK drops) is bound under the SDK's own name on purpose: it IS a
+# ``ClaudeSDKClient``, and ``src.backends.claude.client.ClaudeSDKClient`` is the
+# seam tests patch to stub the SDK — keep that seam stable.
+from src.backends.claude.sdk_client import GatewayClaudeSDKClient as ClaudeSDKClient
+from src.backends.claude.sdk_client import ToolProgressMessage
 from src.backends.common import TokenEstimateMixin, error_chunk
 from src.backends.mcp_headers import inject_mcp_headers
 from src.constants import ASK_USER_TIMEOUT_SECONDS
@@ -892,6 +898,7 @@ class ClaudeCodeCLI(TokenEstimateMixin):
 
     # Order matters: subclasses before base classes for isinstance checks
     _TYPE_CHECKS = [
+        (ToolProgressMessage, "tool_progress"),  # gateway-owned; the SDK has no type for it
         (StreamEvent, "stream_event"),
         (AssistantMessage, "assistant"),
         (ResultMessage, "result"),

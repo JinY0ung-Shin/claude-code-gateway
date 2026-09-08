@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from src.constants import MCP_CONFIG
+from src.constants import MCP_CONFIG, effective_mcp_tool_timeout_ms
 
 logger = logging.getLogger(__name__)
 
@@ -161,20 +161,64 @@ def resolve_mcp_server_config(
     return resolved
 
 
+def _positive_timeout_ms(value: Any) -> Optional[int]:
+    """Parse a positive numeric MCP server timeout, else return ``None``."""
+    if isinstance(value, bool):
+        return None
+    try:
+        timeout = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return timeout if timeout > 0 else None
+
+
+def _clamp_server_timeout(name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Clamp a per-server timeout to the gateway-owned global MCP ceiling.
+
+    Claude Code lets a server-level ``timeout`` override ``MCP_TOOL_TIMEOUT``.
+    Without this clamp, a 20-minute server override could keep running after the
+    gateway's 11-minute whole-turn stall budget and recreate the timeout
+    inversion this policy exists to prevent. ``resolve_mcp_servers`` runs after
+    gateway + manifest/plugin MCP maps are merged, so every source gets the same
+    ceiling.
+    """
+    requested = _positive_timeout_ms(config.get("timeout"))
+    ceiling = effective_mcp_tool_timeout_ms()
+    if requested is None or requested <= ceiling:
+        return config
+    logger.warning(
+        "MCP server %r requested timeout=%dms above gateway MCP_TOOL_TIMEOUT "
+        "ceiling=%dms; clamping to the gateway ceiling",
+        name,
+        requested,
+        ceiling,
+    )
+    config["timeout"] = ceiling
+    return config
+
+
 def resolve_mcp_servers(
     servers: Optional[McpServersDict],
     *,
     environ: Optional[Mapping[str, str]] = None,
 ) -> Optional[McpServersDict]:
-    """Resolve env refs for every server config. Returns ``None`` when input is empty."""
+    """Resolve env refs and enforce the effective MCP timeout for every server.
+
+    Returns ``None`` when input is empty. The returned configs are fresh copies;
+    oversized per-server ``timeout`` overrides are clamped before the SDK/CLI
+    sees them.
+    """
     if not servers:
         return servers
-    return {
-        name: resolve_mcp_server_config(cfg, environ=environ)
-        if isinstance(cfg, dict)
-        else cfg
-        for name, cfg in servers.items()
-    }
+    resolved: McpServersDict = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            resolved[name] = cfg
+            continue
+        resolved[name] = _clamp_server_timeout(
+            name, resolve_mcp_server_config(cfg, environ=environ)
+        )
+    return resolved
 
 
 def mcp_secret_maps_meta(config: Mapping[str, Any]) -> Dict[str, Any]:
