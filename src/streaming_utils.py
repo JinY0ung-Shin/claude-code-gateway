@@ -9,6 +9,7 @@ from src.constants import (
     STREAM_STALL_TIMEOUT_SECONDS,
     STREAM_TOOL_PROGRESS,
     SUBAGENT_STREAM_PROGRESS,
+    TOOL_STALL_TIMEOUT_SECONDS,
     SUBAGENT_STREAM_TEXT,
     SUBAGENT_STREAM_TOOL_BLOCKS,
 )
@@ -42,6 +43,7 @@ from src.sse_builders import (  # noqa: F401
     make_response_sse,
     make_task_response_sse,
     make_teammate_message_response_sse,
+    make_tool_progress_response_sse,
     make_tool_result_response_sse,
     make_tool_use_response_sse,
     make_tool_use_started_response_sse,
@@ -590,10 +592,21 @@ def _reap_background_reader(task) -> None:
         logger.info("SSE reader task ended with error", exc_info=exc)
 
 
+def _describe_in_flight(tools: list) -> str:
+    """One-line ``name (id) Ns`` list for the stall error message."""
+    return ", ".join(
+        f"{t.get('name') or '?'} ({t.get('tool_use_id') or '?'}) {t.get('elapsed_seconds', 0)}s"
+        for t in tools
+    )
+
+
 async def _keepalive_wrapper(
     source: AsyncGenerator,
     interval: int,
     stall_after: float = 0,
+    *,
+    in_flight_stall_after: float = 0,
+    in_flight: Optional[Callable[[], list]] = None,
 ) -> AsyncGenerator:
     """Wrap *source* to yield ``_SSE_KEEPALIVE`` during idle periods.
 
@@ -610,6 +623,14 @@ async def _keepalive_wrapper(
     instead of another keepalive. Any real item resets the clock, so only
     a wedged source — not a slow one — trips it. The check rides the
     keepalive timer, so it needs *interval* > 0 to fire mid-silence.
+
+    *in_flight* (zero-arg, returns the outstanding tool calls as
+    :meth:`ToolStatsCollector.in_flight` does) makes the budget tool-aware:
+    while it returns a non-empty list the silence is a tool running, and
+    *in_flight_stall_after* (if > 0) replaces *stall_after* as the budget —
+    aligned with the CLI's own MCP_TOOL_TIMEOUT so the CLI's per-call
+    watchdog fires first. The stall error then names the tool(s) so the
+    failure reads "tool X ran too long", not "the stream broke".
 
     The source generator is iterated inside a **single dedicated task** so
     that anyio cancel scopes within the SDK never cross task boundaries.
@@ -645,9 +666,22 @@ async def _keepalive_wrapper(
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=interval)
             except asyncio.TimeoutError:
-                if stall_after > 0 and time.monotonic() - last_item_at > stall_after:
+                running = in_flight() if in_flight is not None else []
+                budget = (
+                    in_flight_stall_after
+                    if running and in_flight_stall_after > 0
+                    else stall_after
+                )
+                silence = time.monotonic() - last_item_at
+                if budget > 0 and silence > budget:
+                    if running:
+                        raise StreamStallError(
+                            f"tool call produced no output for {budget:.0f}s "
+                            f"(TOOL_STALL_TIMEOUT) — {_describe_in_flight(running)}; "
+                            "failing the turn so the worker is reclaimed"
+                        )
                     raise StreamStallError(
-                        f"no SDK output for {stall_after:.0f}s — "
+                        f"no SDK output for {budget:.0f}s — "
                         "turn is wedged, failing it so the worker is reclaimed"
                     )
                 yield _SSE_KEEPALIVE
@@ -678,6 +712,7 @@ def _record_tool_use(tool_stats: ToolStatsCollector, tool_block: Dict[str, Any])
     tool_stats.record_use(
         _block_field(tool_block, "id") or _block_field(tool_block, "tool_use_id"),
         _block_field(tool_block, "name") or "",
+        parent_tool_use_id=_block_field(tool_block, "parent_tool_use_id"),
     )
 
 
@@ -779,6 +814,69 @@ def _tool_use_events(
             tool_block,
             sequence_number=next_seq(),
             parent_tool_use_id=tool_block.get("parent_tool_use_id"),
+        )
+    ]
+
+
+def _tool_heartbeat_events(
+    tool_stats: ToolStatsCollector, next_seq: Callable[[], int]
+) -> list[str]:
+    """Gateway-authored ``response.tool_progress`` for every in-flight tool.
+
+    Emitted on the keepalive tick only (never resets the stall clock — a
+    wedged tool must still trip the guard). Honours STREAM_TOOL_PROGRESS and
+    the subagent progress gate.
+    """
+    if not STREAM_TOOL_PROGRESS:
+        return []
+    events: list[str] = []
+    for tool in tool_stats.in_flight():
+        parent = tool.get("parent_tool_use_id")
+        if parent is not None and not SUBAGENT_STREAM_PROGRESS:
+            continue
+        events.append(
+            make_tool_progress_response_sse(
+                tool["tool_use_id"],
+                tool["name"],
+                tool["elapsed_seconds"],
+                source="gateway",
+                sequence_number=next_seq(),
+                parent_tool_use_id=parent,
+            )
+        )
+    return events
+
+
+def _cli_tool_progress_events(
+    chunk: Dict[str, Any], next_seq: Callable[[], int]
+) -> list[str]:
+    """Forward a CLI ``tool_progress`` chunk as ``response.tool_progress``.
+
+    Field names follow the CLI frame (``tool_name``, ``elapsed_time_seconds``);
+    the wire event uses the gateway's own (``name``, ``elapsed_seconds``) so
+    both sources look identical to a client.
+    """
+    if not STREAM_TOOL_PROGRESS:
+        return []
+    parent = chunk.get("parent_tool_use_id")
+    if parent is not None and not SUBAGENT_STREAM_PROGRESS:
+        return []
+    tool_use_id = chunk.get("tool_use_id")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        return []
+    elapsed = chunk.get("elapsed_time_seconds")
+    if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)):
+        elapsed = 0
+    message = chunk.get("message")
+    return [
+        make_tool_progress_response_sse(
+            tool_use_id,
+            str(chunk.get("tool_name") or ""),
+            int(elapsed),
+            source="cli",
+            sequence_number=next_seq(),
+            parent_tool_use_id=parent if isinstance(parent, str) else None,
+            message=message if isinstance(message, str) and message else None,
         )
     ]
 
@@ -1230,10 +1328,25 @@ async def stream_response_chunks(
             chunk_source,
             SSE_KEEPALIVE_INTERVAL,
             stall_after=STREAM_STALL_TIMEOUT_SECONDS,
+            in_flight_stall_after=TOOL_STALL_TIMEOUT_SECONDS,
+            in_flight=tool_stats.in_flight,
         ):
-            # Keepalive SSE comments — forward directly to the client
+            # Keepalive SSE comments — forward directly to the client. While a
+            # tool call is outstanding, also say so: the comment alone cannot
+            # tell a client whether the silence is a slow MCP tool or a dead
+            # stream, and clients used to give up on exactly that ambiguity.
             if chunk is _SSE_KEEPALIVE:
                 yield _SSE_KEEPALIVE
+                for event in _tool_heartbeat_events(tool_stats, _next_seq):
+                    yield event
+                continue
+
+            # The CLI's own tool_progress frame (mcp_progress, bash_progress …),
+            # surfaced by the gateway SDK client — the pinned SDK drops it.
+            # Real SDK output: it already reset the stall clock above.
+            if isinstance(chunk, dict) and chunk.get("type") == "tool_progress":
+                for event in _cli_tool_progress_events(chunk, _next_seq):
+                    yield event
                 continue
 
             # ClaudeSDKClient.interrupt() ends the active SDK turn with an

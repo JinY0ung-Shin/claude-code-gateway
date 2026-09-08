@@ -208,6 +208,101 @@ SSE_KEEPALIVE_INTERVAL = parse_int_env("SSE_KEEPALIVE_INTERVAL", 15)
 # requires SSE_KEEPALIVE_INTERVAL > 0. Set to 0 to disable.
 STREAM_STALL_TIMEOUT_SECONDS = parse_int_env("STREAM_STALL_TIMEOUT", 600)
 
+
+# Grace added on top of the CLI's own per-call watchdogs so they fire first
+# (tool error → the model can react, the turn survives) and the gateway's
+# whole-turn stall kill is the last resort, not the first.
+TOOL_STALL_GRACE_SECONDS = 60
+# The Claude CLI's Bash tool ceiling when BASH_MAX_TIMEOUT_MS is not set (the
+# tool schema's own words: max 600000 ms). Bash is the one built-in that can
+# legitimately stay silent this long — a command with no output emits no
+# bash_progress frame — so the tool budget has to sit above it. Only the
+# MAXIMUM counts here: BASH_DEFAULT_TIMEOUT_MS is what a call gets when it
+# names no timeout, and a call may still ask for anything up to the max, so
+# using the default as the ceiling would recreate the very inversion this
+# budget exists to prevent (review on #182).
+CLI_BASH_MAX_TIMEOUT_MS = 600_000
+# Claude Code's upstream MCP default is intentionally enormous. The gateway
+# instead owns a bounded product default so its whole-turn stall guard can sit
+# *outside* the real tool watchdog. This value is injected into the process env
+# when the operator did not provide a positive MCP_TOOL_TIMEOUT, so every Claude
+# child inherits the same ceiling the gateway uses for derivation.
+GATEWAY_MCP_TOOL_TIMEOUT_DEFAULT_MS = 600_000
+
+
+def _positive_ms_env(name: str) -> int:
+    """``name`` as positive integer milliseconds, else 0 (unset/invalid/non-positive)."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return 0
+    try:
+        ms = int(float(raw))
+    except ValueError:
+        return 0
+    return ms if ms > 0 else 0
+
+
+def effective_mcp_tool_timeout_ms() -> int:
+    """Gateway-owned effective MCP watchdog ceiling in milliseconds.
+
+    Claude Code's unset MCP timeout is far larger than the gateway's worker
+    liveness budgets, so leaving it implicit makes a healthy long MCP call look
+    stalled to the gateway first. The gateway therefore owns a bounded default;
+    operators can raise it explicitly, in which case the derived stall budget
+    and config checker follow the same value.
+    """
+    return _positive_ms_env("MCP_TOOL_TIMEOUT") or GATEWAY_MCP_TOOL_TIMEOUT_DEFAULT_MS
+
+
+def _ensure_mcp_tool_timeout_env() -> int:
+    """Install the gateway-owned MCP ceiling into the inherited child env."""
+    value = effective_mcp_tool_timeout_ms()
+    if _positive_ms_env("MCP_TOOL_TIMEOUT") <= 0:
+        os.environ["MCP_TOOL_TIMEOUT"] = str(value)
+    return value
+
+
+# Claude Agent SDK subprocesses inherit the gateway process environment. Make
+# the policy real at runtime, not merely a number used by the stall derivation.
+EFFECTIVE_MCP_TOOL_TIMEOUT_MS = _ensure_mcp_tool_timeout_env()
+
+
+def cli_tool_watchdog_ms() -> int:
+    """The longest a CLI tool call may legitimately stay silent, in milliseconds.
+
+    MCP is bounded by the gateway-owned effective ``MCP_TOOL_TIMEOUT`` above;
+    Bash is bounded by ``BASH_MAX_TIMEOUT_MS`` or the CLI's built-in 600000 ms.
+    The budget must clear the larger one: TaskCreate is instant and subagents
+    keep streaming, but a silent Bash job or a slow MCP server both look
+    identical to a wedge until their own watchdog speaks.
+    """
+    bash_ms = _positive_ms_env("BASH_MAX_TIMEOUT_MS") or CLI_BASH_MAX_TIMEOUT_MS
+    return max(effective_mcp_tool_timeout_ms(), bash_ms)
+
+
+def _tool_stall_timeout_default() -> int:
+    """Default silence budget while a tool call is in flight (seconds).
+
+    A slow tool is *silence* to the stall guard above — nothing distinguishes
+    "the CLI is waiting on a tool that will answer in 12 minutes" from "the CLI
+    is wedged". The CLI's own watchdogs (:func:`cli_tool_watchdog_ms`) end that
+    wait with a tool *error* the model can act on, which is the outcome we want,
+    so the budget is the largest watchdog plus a grace period: the CLI times the
+    call out first, and the gateway kills the whole turn only when even that
+    failed to fire.
+    """
+    return -(-cli_tool_watchdog_ms() // 1000) + TOOL_STALL_GRACE_SECONDS
+
+
+# Silence budget while a leader-level tool call is outstanding (tool_use seen,
+# no tool_result yet). ``TOOL_STALL_TIMEOUT`` overrides; unset → derived from
+# the CLI watchdogs (see above; 660 s with default MCP/Bash ceilings); 0 → same
+# as STREAM_STALL_TIMEOUT. While a tool is in flight the gateway also emits
+# ``response.tool_progress`` heartbeats on the keepalive tick so clients can
+# tell "tool still running" from "stream dead". Requires
+# SSE_KEEPALIVE_INTERVAL > 0 like the stall guard itself.
+TOOL_STALL_TIMEOUT_SECONDS = parse_int_env("TOOL_STALL_TIMEOUT", _tool_stall_timeout_default())
+
 # Safety net behind the stall guard, enforced by the expiry sweep: a session
 # whose active turn has made NO PROGRESS (no real SDK chunk, stamped by the
 # route's chunk wrapper) for this long stops pinning itself and is reclaimed

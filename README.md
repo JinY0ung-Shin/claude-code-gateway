@@ -126,7 +126,10 @@ Most settings are environment variables. Start with `.env.example`.
 | `SESSION_EVICTION_MIN_IDLE_SECONDS` | Sessions accessed within this window are never evicted (thrash guard); default `60`, clamped to ≥1 |
 | `MAX_CONCURRENT_TURNS` | Agent turns allowed to run simultaneously; default `8` |
 | `MAX_CONCURRENT_TURNS_PER_USER` | Per-caller fairness hint keyed on `user` — not a security control; default `3` |
-| `SSE_KEEPALIVE_INTERVAL` | SSE keepalive comment interval; `0` disables it |
+| `SSE_KEEPALIVE_INTERVAL` | SSE keepalive comment interval; `0` disables it (and with it the stall guards below) |
+| `STREAM_STALL_TIMEOUT` | Silence budget for a streaming turn in seconds (no SDK chunk → `response.failed`, worker reclaimed); default `600` |
+| `TOOL_STALL_TIMEOUT` | Silence budget while a tool call is in flight; default: `max(effective MCP ceiling, Bash max) / 1000 + 60 s`. Unset MCP uses the gateway-owned `600000` ms ceiling; Bash uses `BASH_MAX_TIMEOUT_MS` or the CLI 600 s max, so the default is `660` s. `0` = same as `STREAM_STALL_TIMEOUT`. While a tool runs the gateway also emits `response.tool_progress` heartbeats |
+| `MCP_TOOL_TIMEOUT` / `BASH_MAX_TIMEOUT_MS` | Claude CLI per-call watchdog ceilings in **milliseconds**. A positive `MCP_TOOL_TIMEOUT` is the effective MCP ceiling; when unset/non-positive the gateway injects `600000` ms into Claude children, and larger per-server MCP `timeout` values are clamped with a warning. Bash uses `BASH_MAX_TIMEOUT_MS` or the CLI 600000 ms max. The required order is `watchdog < TOOL_STALL_TIMEOUT < ACTIVE_TURN_MAX_AGE`; either inversion is a startup configuration error unless `SKIP_CONFIG_CHECK=true` explicitly bypasses validation |
 | `GATEWAY_HOST` | Host bind address; falls back to legacy `CLAUDE_WRAPPER_HOST` |
 | `USER_WORKSPACES_DIR` | Workspace base directory (system temp dir if unset; see Workspaces) |
 | `MCP_CONFIG` | Shared MCP server config |
