@@ -25,6 +25,7 @@ from typing import Any, Iterable, Iterator, Optional
 
 from .errors import BridgeCapabilityError
 from .response import (
+    _RECOGNIZED_FINISH,
     _finish_to_status,
     _new_call_id,
     _new_msg_id,
@@ -71,6 +72,9 @@ class _StreamState:
         self.output: list[tuple[int, dict]] = []
         self.usage: Optional[dict] = None
         self.finish: Optional[str] = None
+        # Only a RECOGNIZED upstream finish authorizes a terminal completed/
+        # incomplete; iterator exhaustion without one is a truncated stream.
+        self.terminal_seen: bool = False
         self.reasoning: Optional[dict] = None  # {id, oi, buf}
         self.text: Optional[dict] = None  # {id, oi, buf}
         self.tools: dict[Any, dict] = {}  # upstream index -> tool state
@@ -93,7 +97,7 @@ class _StreamState:
         *,
         status: str,
         output: list[dict],
-        usage: dict,
+        usage: Optional[dict],
         incomplete_details: Optional[dict] = None,
         error: Optional[dict] = None,
     ) -> dict:
@@ -104,9 +108,10 @@ class _StreamState:
             "status": status,
             "model": self.model,
             "output": output,
-            "usage": usage,
             "metadata": self.metadata,
         }
+        if usage is not None:
+            obj["usage"] = usage
         if incomplete_details is not None:
             obj["incomplete_details"] = incomplete_details
         if error is not None:
@@ -121,26 +126,30 @@ class _StreamState:
     def created_event(self) -> dict:
         return self._event(
             "response.created",
-            response=self._lean_object(
-                status="in_progress", output=[], usage=_usage_to_responses({})
-            ),
+            response=self._lean_object(status="in_progress", output=[], usage=None),
         )
 
     def in_progress_event(self) -> dict:
         return self._event(
             "response.in_progress",
-            response=self._lean_object(
-                status="in_progress", output=[], usage=_usage_to_responses({})
-            ),
+            response=self._lean_object(status="in_progress", output=[], usage=None),
         )
 
     # -- reasoning item -----------------------------------------------------
 
     def _handle_reasoning_delta(self, fragment: str) -> list[dict]:
-        # Reasoning must PRECEDE any text/tool output; a fragment arriving after
-        # output has started is dropped (it can't be re-ordered before it).
+        # Reasoning must PRECEDE any text/tool output. This is a validation
+        # invariant, not permission to discard violations: a reasoning fragment
+        # arriving after text/tool output has started cannot be represented
+        # faithfully here (it would reorder before emitted output), so refuse
+        # rather than silently drop it. Real-runtime certification may later
+        # graduate a broader accepted ordering.
         if self.text is not None or self.tools:
-            return []
+            raise BridgeCapabilityError(
+                "reasoning delta arrived after text/tool output started; this "
+                "ordering has no faithful Responses representation here and is "
+                "refused rather than silently dropped"
+            )
         events: list[dict] = []
         if self.reasoning is None:
             rid = _new_reasoning_id()
@@ -349,7 +358,14 @@ class _StreamState:
             if not isinstance(tc, dict):
                 raise BridgeCapabilityError("streamed tool_call must be an object")
             index = tc.get("index", 0)
-            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            fn = tc.get("function")
+            if fn is None:
+                fn = {}
+            elif not isinstance(fn, dict):
+                raise BridgeCapabilityError(
+                    "streamed tool_call 'function' must be an object, got "
+                    f"{type(fn).__name__}"
+                )
             name = fn.get("name")
             upstream_id = tc.get("id") if isinstance(tc.get("id"), str) else None
             existing = self.tools.get(index)
@@ -404,6 +420,15 @@ class _StreamState:
             return []
         if index in self.tool_order:
             self.tool_order.remove(index)
+        if not tool["name"]:
+            # A tool item cannot be finalized without a function name to route to
+            # -- a name may legitimately arrive on a later fragment, but if none
+            # ever did, refuse before emitting output_item.done rather than
+            # emitting name:"".
+            raise BridgeCapabilityError(
+                "streamed tool_call was never given a function name; refusing "
+                "rather than closing an unnamed tool call"
+            )
         full = "".join(tool["buf"])
         item: dict[str, Any] = {
             "id": tool["fc_id"],
@@ -438,17 +463,26 @@ class _StreamState:
     # -- per-chunk feed -----------------------------------------------------
 
     def feed(self, chunk: dict) -> list[dict]:
+        # Presence-sensitive throughout: a specific valid shape (absent, None, or
+        # the exact empty collection) is distinguished from a wrong-type value,
+        # which is refused -- a false-y malformed shape must not masquerade as a
+        # valid absence and silently shorten the Responses stream.
         if not isinstance(chunk, dict):
             raise BridgeCapabilityError("chat stream chunk must be an object")
-        # Usage can arrive on a trailing chunk with empty choices
+        # Usage can arrive on a trailing chunk with empty/absent choices
         # (stream_options.include_usage); stash it for the terminal event.
         if chunk.get("usage") is not None:
             self.usage = _usage_to_responses(chunk["usage"])
         choices = chunk.get("choices")
-        if not choices:
+        if choices is None:
             return []
         if not isinstance(choices, list):
-            raise BridgeCapabilityError("chat stream chunk 'choices' must be a list")
+            raise BridgeCapabilityError(
+                "chat stream chunk 'choices' must be a list, got "
+                f"{type(choices).__name__}"
+            )
+        if not choices:
+            return []  # the valid trailing usage-only shape
         if len(choices) > 1:
             raise BridgeCapabilityError(
                 "chat stream chunk carries multiple choices (n>1); Responses "
@@ -458,32 +492,48 @@ class _StreamState:
         if not isinstance(choice, dict):
             raise BridgeCapabilityError("chat stream choice must be an object")
         finish = choice.get("finish_reason")
-        if finish:
+        if finish is not None:
+            if finish not in _RECOGNIZED_FINISH:
+                raise BridgeCapabilityError(
+                    f"unrecognized chat finish_reason {finish!r}; refusing rather "
+                    "than treating it as a terminal success"
+                )
             self.finish = finish
+            self.terminal_seen = True
         delta = choice.get("delta")
-        if not isinstance(delta, dict):
+        if delta is None:
             return []
+        if not isinstance(delta, dict):
+            raise BridgeCapabilityError(
+                f"chat stream 'delta' must be an object, got {type(delta).__name__}"
+            )
 
         events: list[dict] = []
-        reasoning = delta.get("reasoning_content")
-        if self.emit_reasoning and isinstance(reasoning, str) and reasoning:
-            events += self._handle_reasoning_delta(reasoning)
+        if self.emit_reasoning and delta.get("reasoning_content") is not None:
+            reasoning = delta["reasoning_content"]
+            if not isinstance(reasoning, str):
+                raise BridgeCapabilityError(
+                    "streamed 'reasoning_content' must be a string, got "
+                    f"{type(reasoning).__name__}"
+                )
+            if reasoning:
+                events += self._handle_reasoning_delta(reasoning)
         if delta.get("refusal") is not None:
             raise BridgeCapabilityError(
                 "streamed 'refusal' has no local Responses representation; "
                 "refusing rather than dropping it"
             )
-        content = delta.get("content")
-        if content:
+        if delta.get("content") is not None:
+            content = delta["content"]
             if not isinstance(content, str):
                 raise BridgeCapabilityError(
                     "streamed message 'content' delta must be a string, got "
                     f"{type(content).__name__}"
                 )
-            events += self._handle_text_delta(content)
-        tool_calls = delta.get("tool_calls")
-        if tool_calls:
-            events += self._handle_tool_deltas(tool_calls)
+            if content:
+                events += self._handle_text_delta(content)
+        if delta.get("tool_calls") is not None:
+            events += self._handle_tool_deltas(delta["tool_calls"])
         return events
 
     def failed_event(self, err: Any) -> dict:
@@ -492,8 +542,33 @@ class _StreamState:
             response=self._lean_object(
                 status="failed",
                 output=self._sorted_output(),
-                usage=self.usage or _usage_to_responses({}),
+                usage=self.usage,
                 error=_upstream_error_to_responses(err),
+            ),
+        )
+
+    def incomplete_stream_failed(self) -> dict:
+        """Terminal for a chat stream that ended with NO recognized finish.
+
+        Only positive terminal evidence from the upstream protocol authorizes a
+        ``response.completed``; iterator exhaustion mid-response is a truncation.
+        Partial open items are NOT closed as completed (their ``output_item.done``
+        is never emitted) -- only already-completed items appear in the failed
+        object's output.
+        """
+        return self._event(
+            "response.failed",
+            response=self._lean_object(
+                status="failed",
+                output=self._sorted_output(),
+                usage=self.usage,
+                error={
+                    "code": "incomplete_upstream_stream",
+                    "message": (
+                        "chat/completions stream closed before a terminal "
+                        "finish_reason"
+                    ),
+                },
             ),
         )
 
@@ -507,7 +582,7 @@ class _StreamState:
         obj = self._lean_object(
             status=status,
             output=self._sorted_output(),
-            usage=self.usage or _usage_to_responses({}),
+            usage=self.usage,
             incomplete_details=incomplete,
         )
         events.append(
@@ -537,11 +612,14 @@ def chat_stream_to_responses_events(
     """Translate a chat/completions chunk stream to Responses event dicts.
 
     Yields ``response.created`` + ``response.in_progress``, then per-item
-    lifecycle events, then a terminal ``response.completed``/``.incomplete`` (or
-    ``response.failed`` on an upstream error chunk). Each event dict carries its
-    ``type`` and a monotonic ``sequence_number``; the route frames them as SSE.
-    Consuming the generator to exhaustion is the normal completion; abandoning it
-    early (client disconnect) simply stops -- no terminal event is synthesized.
+    lifecycle events, then a terminal event: ``response.completed``/
+    ``.incomplete`` ONLY when a recognized upstream ``finish_reason`` was
+    observed; ``response.failed`` on an upstream error chunk OR when the stream
+    ends with no recognized terminal (a truncated stream is never fabricated into
+    success). Each event dict carries its ``type`` and a monotonic
+    ``sequence_number``; the route frames them as SSE. Abandoning the generator
+    early (client disconnect / ``gen.close()``) simply stops -- no terminal event
+    is synthesized then.
     """
     state = _StreamState(
         response_id=response_id,
@@ -563,5 +641,12 @@ def chat_stream_to_responses_events(
             return
         for event in state.feed(chunk):
             yield event
-    for event in state.finalize():
-        yield event
+    # Only a recognized upstream terminal finish authorizes response.completed.
+    # Iterator exhaustion without one is a truncated stream -> failed, never a
+    # fabricated success. (Consumer-side cancellation via gen.close() stops the
+    # loop before this point, so no terminal is synthesized then.)
+    if state.terminal_seen:
+        for event in state.finalize():
+            yield event
+    else:
+        yield state.incomplete_stream_failed()

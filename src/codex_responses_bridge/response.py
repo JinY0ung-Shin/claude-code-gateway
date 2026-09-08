@@ -22,7 +22,6 @@ conversation store, and any live HTTP route -- this is pure translation.
 
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from typing import Any, Optional
@@ -57,15 +56,25 @@ def _new_call_id() -> str:
     return f"call_{uuid.uuid4().hex[:16]}"
 
 
+# The chat ``finish_reason`` values this bridge certifies. An absent or unknown
+# value is NOT treated as success -- only positive terminal evidence authorizes a
+# Responses ``completed`` (see the streaming terminalization contract).
+_RECOGNIZED_FINISH = frozenset(
+    {"stop", "tool_calls", "function_call", "length", "content_filter"}
+)
+
+
 def _finish_to_status(
     finish: Any, length_as_completed: bool = False
 ) -> tuple[str, Optional[dict]]:
-    """Map a chat ``finish_reason`` to a Responses ``(status, incomplete_details)``.
+    """Map a RECOGNIZED chat ``finish_reason`` to ``(status, incomplete_details)``.
 
-    ``length`` -> ``incomplete`` with ``max_output_tokens`` (or ``completed`` when
-    the caller opts into Codex length-as-completed, which avoids Codex re-sending
-    a whole truncated turn); ``content_filter`` -> ``incomplete``; everything else
-    (``stop``/``tool_calls``/``function_call``/absent) -> ``completed``.
+    Callers validate the reason is in :data:`_RECOGNIZED_FINISH` first, so this
+    only ever sees a certified value. ``length`` -> ``incomplete`` with
+    ``max_output_tokens`` (or ``completed`` under the Codex length-as-completed
+    opt-in, which avoids Codex re-sending a whole truncated turn);
+    ``content_filter`` -> ``incomplete``; ``stop``/``tool_calls``/
+    ``function_call`` -> ``completed``.
     """
     if finish == "length":
         if length_as_completed:
@@ -76,16 +85,19 @@ def _finish_to_status(
     return "completed", None
 
 
-def _usage_to_responses(usage: Any) -> dict:
-    """Map chat ``usage`` to the local ``ResponseUsage`` shape.
+def _usage_to_responses(usage: Any) -> Optional[dict]:
+    """Map chat ``usage`` to the local ``ResponseUsage`` shape, or ``None``.
 
-    ``total_tokens`` is DERIVED (never copied from upstream), matching the local
-    model's ``model_validator``. ``output_tokens_details`` is intentionally
-    omitted (Claude folds thinking into ``output_tokens``); ``cache_creation_
-    tokens`` has no chat equivalent (0); ``context_tokens`` is ``None`` -> omitted.
+    Returns ``None`` when the upstream provided NO usage object: Codex accepts a
+    terminal event with usage absent (``token_usage: None``) and #173 treats
+    accounting as correctness, so unknown is preserved as absent rather than
+    fabricated as a zero block. When a usage object IS present, ``total_tokens``
+    is DERIVED (never copied), ``output_tokens_details`` is omitted (Claude folds
+    thinking into ``output_tokens``), ``cache_creation_tokens`` has no chat
+    equivalent (0), and ``context_tokens`` (``None``) is omitted.
     """
     if not isinstance(usage, dict):
-        usage = {}
+        return None
     prompt = _as_int(usage.get("prompt_tokens"))
     completion = _as_int(usage.get("completion_tokens"))
     details = usage.get("prompt_tokens_details")
@@ -107,13 +119,17 @@ def _response_object(
     model: str,
     status: str,
     output: list[dict],
-    usage: dict,
+    usage: Optional[dict],
     metadata: Optional[dict],
     created_at: int,
     incomplete_details: Optional[dict] = None,
     error: Optional[dict] = None,
 ) -> dict:
-    """Build the lean local Responses object (no request echo), ``None`` omitted."""
+    """Build the lean local Responses object (no request echo), ``None`` omitted.
+
+    ``usage`` is omitted when unknown (``None``) rather than zero-filled, so a
+    "provider reported nothing" is not silently reported as "provider reported 0".
+    """
     obj: dict[str, Any] = {
         "id": response_id,
         "object": "response",
@@ -121,9 +137,10 @@ def _response_object(
         "status": status,
         "model": model,
         "output": output,
-        "usage": usage,
         "metadata": metadata or {},
     }
+    if usage is not None:
+        obj["usage"] = usage
     if incomplete_details is not None:
         obj["incomplete_details"] = incomplete_details
     if error is not None:
@@ -150,8 +167,10 @@ def _function_call_item(
 
     ``id`` follows the local ``fc_<call_id>`` convention; a missing upstream id is
     minted once (some vLLM/SGLang models omit it) and used for both the item id
-    and ``call_id`` so it round-trips within this response. Non-serializable
-    arguments are refused rather than dropped.
+    and ``call_id`` so it round-trips within this response. ``arguments`` must be
+    a JSON string -- a dict/list/None is refused, never JSON-repaired (the same
+    rule PR-1's request half enforces; ``None -> {}`` would invent a valid
+    zero-arg call).
     """
     if not isinstance(tc, dict):
         raise BridgeCapabilityError("chat tool_call must be an object")
@@ -166,13 +185,11 @@ def _function_call_item(
         call_id = _new_call_id()
     args = fn.get("arguments")
     if not isinstance(args, str):
-        try:
-            args = json.dumps(args if args is not None else {}, ensure_ascii=False)
-        except (TypeError, ValueError) as exc:
-            raise BridgeCapabilityError(
-                "chat tool_call arguments are not JSON-serializable; refusing "
-                "rather than emitting a corrupt tool call"
-            ) from exc
+        raise BridgeCapabilityError(
+            "chat tool_call 'arguments' must be a JSON string, got "
+            f"{type(args).__name__}; refusing rather than repairing a malformed "
+            "shape into an executable tool call"
+        )
     item: dict[str, Any] = {
         "id": f"fc_{call_id}",
         "type": "function_call",
@@ -200,17 +217,23 @@ def _message_output_items(
         raise BridgeCapabilityError("chat choice 'message' must be an object")
     items: list[dict] = []
 
-    reasoning = message.get("reasoning_content")
-    if emit_reasoning and isinstance(reasoning, str) and reasoning:
-        items.append(
-            {
-                "id": _new_reasoning_id(),
-                "type": "reasoning",
-                "status": item_status,
-                "summary": [{"type": "summary_text", "text": reasoning}],
-                "content": [{"type": "reasoning_text", "text": reasoning}],
-            }
-        )
+    if emit_reasoning and message.get("reasoning_content") is not None:
+        reasoning = message["reasoning_content"]
+        if not isinstance(reasoning, str):
+            raise BridgeCapabilityError(
+                "chat message 'reasoning_content' must be a string, got "
+                f"{type(reasoning).__name__}"
+            )
+        if reasoning:
+            items.append(
+                {
+                    "id": _new_reasoning_id(),
+                    "type": "reasoning",
+                    "status": item_status,
+                    "summary": [{"type": "summary_text", "text": reasoning}],
+                    "content": [{"type": "reasoning_text", "text": reasoning}],
+                }
+            )
 
     if message.get("refusal") is not None:
         # The local Responses contract has no refusal content part or refusal
@@ -268,7 +291,8 @@ def chat_response_to_responses_body(
 
     Returns a plain dict (the lean local object shape). Raises
     :class:`BridgeCapabilityError` on an unrepresentable shape (a refusal, an
-    ``n>1`` multi-choice response, a malformed tool call).
+    ``n>1`` multi-choice response, a malformed tool call, an absent/unknown
+    ``finish_reason``, a missing/malformed ``message``).
     """
     if not isinstance(chat, dict):
         raise BridgeCapabilityError("chat completion response must be an object")
@@ -286,12 +310,27 @@ def chat_response_to_responses_body(
     if not isinstance(choice, dict):
         raise BridgeCapabilityError("chat completion choice must be an object")
 
-    status, incomplete = _finish_to_status(
-        choice.get("finish_reason"), length_as_completed
-    )
+    # A final completion must carry a recognized terminal finish reason; an
+    # absent/unknown one is NOT interpreted as success (fail-closed parity with
+    # the streaming terminalization contract).
+    finish = choice.get("finish_reason")
+    if finish not in _RECOGNIZED_FINISH:
+        raise BridgeCapabilityError(
+            f"chat completion has an absent/unrecognized finish_reason {finish!r};"
+            " refusing rather than treating it as a completed response"
+        )
+    status, incomplete = _finish_to_status(finish, length_as_completed)
     item_status = "incomplete" if status == "incomplete" else "completed"
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        # Require a real message object rather than coercing a missing/null/
+        # malformed one into an empty completed response.
+        raise BridgeCapabilityError(
+            "chat completion choice is missing a 'message' object; refusing "
+            "rather than emitting an empty completed response"
+        )
     output = _message_output_items(
-        choice.get("message") or {},
+        message,
         item_status=item_status,
         emit_reasoning=emit_reasoning,
         namespace_map=namespace_map,

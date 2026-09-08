@@ -183,7 +183,33 @@ def test_tool_call_missing_id_is_synthesized():
     assert item["id"] == f"fc_{item['call_id']}"
 
 
-def test_tool_call_non_string_arguments_serialized():
+def test_tool_call_non_string_arguments_is_refused():
+    # arguments must be a JSON string; dict/list/None is refused, not repaired
+    # (round-1 finding 4, parity with PR-1's request half).
+    for bad in ({"a": 1}, [1, 2], None):
+        with pytest.raises(BridgeCapabilityError):
+            chat_response_to_responses_body(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "function": {"name": "f", "arguments": bad},
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+                response_id="r",
+            )
+
+
+def test_tool_call_string_arguments_unchanged():
+    args = '{"path": "/x", "n": 3}'
     out = chat_response_to_responses_body(
         {
             "choices": [
@@ -191,10 +217,7 @@ def test_tool_call_non_string_arguments_serialized():
                     "finish_reason": "tool_calls",
                     "message": {
                         "tool_calls": [
-                            {
-                                "id": "c1",
-                                "function": {"name": "f", "arguments": {"a": 1}},
-                            }
+                            {"id": "c1", "function": {"name": "f", "arguments": args}}
                         ]
                     },
                 }
@@ -202,7 +225,51 @@ def test_tool_call_non_string_arguments_serialized():
         },
         response_id="r",
     )
-    assert out["output"][0]["arguments"] == '{"a": 1}'
+    assert out["output"][0]["arguments"] == args
+
+
+def test_absent_finish_reason_is_refused():
+    with pytest.raises(BridgeCapabilityError):
+        chat_response_to_responses_body(
+            {"choices": [{"message": {"content": "x"}}]}, response_id="r"
+        )
+
+
+def test_unknown_finish_reason_is_refused():
+    with pytest.raises(BridgeCapabilityError):
+        chat_response_to_responses_body(
+            {"choices": [{"finish_reason": "banana", "message": {"content": "x"}}]},
+            response_id="r",
+        )
+
+
+def test_missing_message_object_is_refused():
+    for bad in ({"finish_reason": "stop"}, {"finish_reason": "stop", "message": None}):
+        with pytest.raises(BridgeCapabilityError):
+            chat_response_to_responses_body({"choices": [bad]}, response_id="r")
+
+
+def test_non_string_reasoning_content_is_refused():
+    with pytest.raises(BridgeCapabilityError):
+        chat_response_to_responses_body(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "a", "reasoning_content": {}},
+                    }
+                ]
+            },
+            response_id="r",
+        )
+
+
+def test_absent_usage_is_omitted():
+    out = chat_response_to_responses_body(
+        {"choices": [{"finish_reason": "stop", "message": {"content": "x"}}]},
+        response_id="r",
+    )
+    assert "usage" not in out
 
 
 def test_namespace_restamp_on_returned_tool_call():
@@ -748,3 +815,257 @@ def test_stream_emit_reasoning_false_drops_reasoning():
         chat_stream_to_responses_events(chunks, response_id="r", emit_reasoning=False)
     )
     assert not any("reasoning" in t for t in _types(events))
+
+
+# =====================================================================
+# Round-1 regression matrix
+# =====================================================================
+
+# -- terminalization: only positive terminal evidence -> completed (finding 1) --
+
+
+def test_stream_partial_text_exhaustion_is_failed_not_completed():
+    # Content but no recognized finish, then the iterator ends.
+    events = list(
+        chat_stream_to_responses_events(
+            [{"choices": [{"delta": {"content": "partial"}, "finish_reason": None}]}],
+            response_id="r",
+        )
+    )
+    assert "response.completed" not in _types(events)
+    terminal = events[-1]
+    assert terminal["type"] == "response.failed"
+    assert terminal["response"]["error"]["code"] == "incomplete_upstream_stream"
+    # the partial message was never closed as completed
+    assert "response.output_item.done" not in _types(events)
+
+
+def test_stream_partial_tool_exhaustion_never_completes_the_call():
+    chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {
+                                    "name": "shell",
+                                    "arguments": '{"cmd":"...',
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        }
+        # transport dies here: no terminal finish
+    ]
+    events = list(chat_stream_to_responses_events(chunks, response_id="r"))
+    assert "response.completed" not in _types(events)
+    assert "response.output_item.done" not in _types(events)
+    assert "response.function_call_arguments.done" not in _types(events)
+    assert events[-1]["type"] == "response.failed"
+
+
+def test_stream_zero_content_exhaustion_is_failed():
+    events = list(
+        chat_stream_to_responses_events(
+            [{"choices": [{"delta": {"role": "assistant"}, "finish_reason": None}]}],
+            response_id="r",
+        )
+    )
+    assert events[-1]["type"] == "response.failed"
+    assert "response.completed" not in _types(events)
+
+
+def test_stream_empty_input_is_failed():
+    events = list(chat_stream_to_responses_events([], response_id="r"))
+    assert _types(events) == [
+        "response.created",
+        "response.in_progress",
+        "response.failed",
+    ]
+
+
+def test_stream_recognized_finish_then_trailing_usage_completes():
+    events = list(
+        chat_stream_to_responses_events(
+            [
+                _text_chunk("done", "stop"),
+                {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+            ],
+            response_id="r",
+        )
+    )
+    assert events[-1]["type"] == "response.completed"
+    assert events[-1]["response"]["usage"]["total_tokens"] == 2
+
+
+def test_stream_unknown_finish_reason_is_refused():
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [{"choices": [{"delta": {}, "finish_reason": "banana"}]}],
+                response_id="r",
+            )
+        )
+
+
+# -- late/interleaved reasoning fails loudly (finding 2) --------------------
+
+
+def test_stream_reasoning_after_text_is_refused():
+    chunks = [
+        _text_chunk("answer"),
+        {"choices": [{"delta": {"reasoning_content": "late"}, "finish_reason": None}]},
+    ]
+    with pytest.raises(BridgeCapabilityError):
+        list(chat_stream_to_responses_events(chunks, response_id="r"))
+
+
+def test_stream_reasoning_after_tool_is_refused():
+    chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c0",
+                                "function": {"name": "a", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {"choices": [{"delta": {"reasoning_content": "late"}, "finish_reason": None}]},
+    ]
+    with pytest.raises(BridgeCapabilityError):
+        list(chat_stream_to_responses_events(chunks, response_id="r"))
+
+
+# -- presence-sensitive stream shape validation (finding 3) ----------------
+
+
+@pytest.mark.parametrize("bad_choices", [{}, "", 0, "x", 5])
+def test_stream_wrong_type_choices_is_refused(bad_choices):
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events([{"choices": bad_choices}], response_id="r")
+        )
+
+
+@pytest.mark.parametrize("bad_delta", [[], "x", 5])
+def test_stream_wrong_type_delta_is_refused(bad_delta):
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [{"choices": [{"delta": bad_delta, "finish_reason": None}]}],
+                response_id="r",
+            )
+        )
+
+
+@pytest.mark.parametrize("bad", [{}, [], 5])
+def test_stream_wrong_type_reasoning_content_is_refused(bad):
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [
+                    {
+                        "choices": [
+                            {"delta": {"reasoning_content": bad}, "finish_reason": None}
+                        ]
+                    }
+                ],
+                response_id="r",
+            )
+        )
+
+
+@pytest.mark.parametrize("bad", [[], {}, False, 0])
+def test_stream_wrong_type_content_is_refused(bad):
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [{"choices": [{"delta": {"content": bad}, "finish_reason": None}]}],
+                response_id="r",
+            )
+        )
+
+
+def test_stream_wrong_type_tool_calls_is_refused():
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [{"choices": [{"delta": {"tool_calls": {}}, "finish_reason": None}]}],
+                response_id="r",
+            )
+        )
+
+
+def test_stream_wrong_type_function_is_refused():
+    with pytest.raises(BridgeCapabilityError):
+        list(
+            chat_stream_to_responses_events(
+                [
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {"index": 0, "id": "c0", "function": "bad"}
+                                    ]
+                                },
+                                "finish_reason": None,
+                            }
+                        ]
+                    }
+                ],
+                response_id="r",
+            )
+        )
+
+
+def test_stream_tool_without_name_is_refused_before_done():
+    # id + arguments arrive, but a function name never does -> refuse at close.
+    chunks = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "id": "c0", "function": {"arguments": "{}"}}
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    with pytest.raises(BridgeCapabilityError):
+        list(chat_stream_to_responses_events(chunks, response_id="r"))
+
+
+# -- usage unknown vs zero (finding 5) --------------------------------------
+
+
+def test_stream_absent_usage_is_omitted_on_terminal():
+    events = list(
+        chat_stream_to_responses_events([_text_chunk("x", "stop")], response_id="r")
+    )
+    assert "usage" not in events[-1]["response"]
+
+
+def test_stream_created_object_omits_usage():
+    events = list(
+        chat_stream_to_responses_events([_text_chunk("x", "stop")], response_id="r")
+    )
+    assert "usage" not in events[0]["response"]
