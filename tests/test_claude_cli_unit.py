@@ -74,6 +74,112 @@ async def test_interrupt_result_is_marked_only_for_explicit_cancel(cli_instance)
     assert chunks[0]["gateway_interrupted"] is True
 
 
+def _buffer_overflow_error(seen: int = 1_200_000, limit: int = 1_048_576):
+    """The exact exception the SDK transport raises for an oversized stdout frame."""
+    from claude_agent_sdk import CLIJSONDecodeError
+
+    return CLIJSONDecodeError(
+        f"JSON message exceeded maximum buffer size of {limit} bytes",
+        ValueError(f"Buffer size {seen} exceeds limit {limit}"),
+    )
+
+
+class TestDescribeSdkStreamError:
+    """#183: the SDK's oversized-frame abort must read as what it is."""
+
+    def test_buffer_overflow_names_cause_sizes_and_remedies(self):
+        from src.backends.claude.client import describe_sdk_stream_error
+
+        text = describe_sdk_stream_error(_buffer_overflow_error())
+        assert "1200000 bytes, limit 1048576 bytes" in text
+        assert "tool result" in text
+        assert "CLAUDE_MAX_BUFFER_SIZE" in text
+        # The SDK's own wording reads like corrupt output; it must not lead.
+        assert not text.startswith("Failed to decode JSON")
+
+    def test_buffer_overflow_without_sizes_reports_effective_limit(self, monkeypatch):
+        from claude_agent_sdk import CLIJSONDecodeError
+        from src.backends.claude.client import describe_sdk_stream_error
+
+        monkeypatch.setenv("CLAUDE_MAX_BUFFER_SIZE", "2097152")
+        exc = CLIJSONDecodeError(
+            "JSON message exceeded maximum buffer size of 2097152 bytes",
+            ValueError("no sizes here"),
+        )
+        assert "limit 2097152 bytes" in describe_sdk_stream_error(exc)
+
+    def test_other_json_decode_errors_pass_through(self):
+        from claude_agent_sdk import CLIJSONDecodeError
+        from src.backends.claude.client import describe_sdk_stream_error
+
+        exc = CLIJSONDecodeError("{not json", ValueError("Expecting value"))
+        assert describe_sdk_stream_error(exc) == str(exc)
+
+    def test_non_sdk_exceptions_pass_through(self):
+        from src.backends.claude.client import describe_sdk_stream_error
+
+        exc = RuntimeError("receive broken")
+        assert describe_sdk_stream_error(exc) == "receive broken"
+
+
+async def test_buffer_overflow_reaches_error_chunk_as_actionable_text(cli_instance):
+    """An oversized tool result fails the turn with an sdk_error the caller can act on."""
+
+    class FakeClient:
+        async def query(self, prompt):
+            self.prompt = prompt
+
+        def receive_response(self):
+            async def messages():
+                raise _buffer_overflow_error()
+                yield  # pragma: no cover - makes this an async generator
+
+            return messages()
+
+    session = SimpleNamespace(
+        active_response_state="streaming",
+        stream_break_event=None,
+        client=object(),
+    )
+    chunks = [
+        chunk
+        async for chunk in cli_instance.run_completion_with_client(FakeClient(), "prompt", session)
+    ]
+
+    assert len(chunks) == 1
+    assert chunks[0]["is_error"] is True
+    assert "exceeded the stdout framing limit" in chunks[0]["error_message"]
+    assert "CLAUDE_MAX_BUFFER_SIZE" in chunks[0]["error_message"]
+    assert session.client is None
+
+
+async def test_buffer_overflow_on_resume_path_is_rewritten_too(cli_instance):
+    """receive_response_from_client (post-hook resume) shares the rewrite."""
+
+    class FakeClient:
+        def receive_response(self):
+            async def messages():
+                raise _buffer_overflow_error()
+                yield  # pragma: no cover
+
+            return messages()
+
+    session = SimpleNamespace(
+        active_response_state="streaming",
+        stream_break_event=None,
+        client=object(),
+        session_id="sess-resume",
+    )
+    chunks = [
+        chunk
+        async for chunk in cli_instance.receive_response_from_client(FakeClient(), session)
+    ]
+
+    assert len(chunks) == 1
+    assert "exceeded the stdout framing limit" in chunks[0]["error_message"]
+    assert session.client is None
+
+
 async def test_interrupt_client_keeps_sdk_client_connected(cli_instance):
     from unittest.mock import AsyncMock
 
@@ -653,26 +759,39 @@ class TestBuildSdkOptions:
         finally:
             runtime_config.reset("agent_teams_enabled")
 
-    def test_max_buffer_size_unset_leaves_sdk_default(
+    def test_max_buffer_size_unset_installs_gateway_default(
         self, cli_instance, monkeypatch
     ):
-        """Without CLAUDE_MAX_BUFFER_SIZE the option stays None (SDK default)."""
+        """Without CLAUDE_MAX_BUFFER_SIZE the gateway's 16 MiB default is installed.
+
+        The SDK's own 1 MiB framing limit aborted a whole turn on one oversized
+        MCP tool result (#183); the gateway now owns the default instead of
+        leaving the option at None.
+        """
+        from src.constants import GATEWAY_MAX_BUFFER_SIZE_DEFAULT
+
         monkeypatch.delenv("CLAUDE_MAX_BUFFER_SIZE", raising=False)
         opts = cli_instance._build_sdk_options()
-        assert opts.max_buffer_size is None
+        assert opts.max_buffer_size == GATEWAY_MAX_BUFFER_SIZE_DEFAULT
+        assert GATEWAY_MAX_BUFFER_SIZE_DEFAULT == 16 * 1024 * 1024
 
     def test_max_buffer_size_env_override_applied(self, cli_instance, monkeypatch):
-        """CLAUDE_MAX_BUFFER_SIZE sets options.max_buffer_size in bytes."""
+        """CLAUDE_MAX_BUFFER_SIZE sets options.max_buffer_size in bytes (either way)."""
         monkeypatch.setenv("CLAUDE_MAX_BUFFER_SIZE", "10485760")
         opts = cli_instance._build_sdk_options()
         assert opts.max_buffer_size == 10485760
+        monkeypatch.setenv("CLAUDE_MAX_BUFFER_SIZE", "1048576")
+        opts = cli_instance._build_sdk_options()
+        assert opts.max_buffer_size == 1048576
 
     def test_max_buffer_size_empty_value_ignored(self, cli_instance, monkeypatch):
         """An empty CLAUDE_MAX_BUFFER_SIZE behaves like unset, no warning."""
+        from src.constants import GATEWAY_MAX_BUFFER_SIZE_DEFAULT
+
         monkeypatch.setenv("CLAUDE_MAX_BUFFER_SIZE", "   ")
         with patch("src.backends.claude.client.logger") as mock_logger:
             opts = cli_instance._build_sdk_options()
-        assert opts.max_buffer_size is None
+        assert opts.max_buffer_size == GATEWAY_MAX_BUFFER_SIZE_DEFAULT
         assert not any(
             "CLAUDE_MAX_BUFFER_SIZE" in str(call)
             for call in mock_logger.warning.call_args_list
@@ -681,12 +800,14 @@ class TestBuildSdkOptions:
     def test_max_buffer_size_invalid_values_warn_and_fall_back(
         self, cli_instance, monkeypatch
     ):
-        """Non-numeric or non-positive values log a warning and keep the default."""
+        """Non-numeric or non-positive values log a warning and keep the gateway default."""
+        from src.constants import GATEWAY_MAX_BUFFER_SIZE_DEFAULT
+
         for bad in ("not-a-number", "0", "-1"):
             monkeypatch.setenv("CLAUDE_MAX_BUFFER_SIZE", bad)
             with patch("src.backends.claude.client.logger") as mock_logger:
                 opts = cli_instance._build_sdk_options()
-            assert opts.max_buffer_size is None
+            assert opts.max_buffer_size == GATEWAY_MAX_BUFFER_SIZE_DEFAULT
             assert any(
                 "CLAUDE_MAX_BUFFER_SIZE" in str(call)
                 for call in mock_logger.warning.call_args_list

@@ -43,6 +43,7 @@ _CHECKED_VARS = [
     "MCP_TOOL_TIMEOUT",
     "BASH_MAX_TIMEOUT_MS",
     "BASH_DEFAULT_TIMEOUT_MS",
+    "CLAUDE_MAX_BUFFER_SIZE",
 ]
 
 
@@ -427,6 +428,41 @@ def test_claude_settings_env_file_path_is_quiet(clean_env, tmp_path):
 # ---------------------------------------------------------------------------
 # run_startup_config_check: fail-fast + escape hatch
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# CLAUDE_MAX_BUFFER_SIZE — one CLI stdout message bounds a tool result (#183)
+# ---------------------------------------------------------------------------
+
+
+def test_sdk_buffer_unset_is_quiet(clean_env):
+    """Unset → the gateway's 16 MiB default applies silently."""
+    assert not [m for m in _messages(check_config(), "warning") if "BUFFER" in m]
+
+
+def test_sdk_buffer_above_sdk_default_is_quiet(clean_env):
+    clean_env.setenv("CLAUDE_MAX_BUFFER_SIZE", str(2 * 1024 * 1024))
+    assert not [m for m in _messages(check_config(), "warning") if "BUFFER" in m]
+
+
+@pytest.mark.parametrize("value", ["1048576", "4096"])
+def test_sdk_buffer_at_or_below_sdk_default_warns(clean_env, value):
+    """Re-creating the SDK's 1 MiB framing limit is the #183 failure mode."""
+    clean_env.setenv("CLAUDE_MAX_BUFFER_SIZE", value)
+    warnings = [m for m in _messages(check_config(), "warning") if "BUFFER" in m]
+    assert len(warnings) == 1
+    assert "sdk_error" in warnings[0]
+    assert "1048576" in warnings[0]
+    assert not _messages(check_config(), "error")
+
+
+@pytest.mark.parametrize("value", ["abc", "0", "-5"])
+def test_sdk_buffer_invalid_value_warns_about_fallback(clean_env, value):
+    clean_env.setenv("CLAUDE_MAX_BUFFER_SIZE", value)
+    warnings = [m for m in _messages(check_config(), "warning") if "BUFFER" in m]
+    assert len(warnings) == 1
+    assert "not a positive integer" in warnings[0]
+    assert str(16 * 1024 * 1024) in warnings[0]
 
 
 def test_run_startup_check_raises_on_error_severity(clean_env):
