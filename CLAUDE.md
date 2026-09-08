@@ -72,6 +72,20 @@ uv run pytest --cov=src                            # with coverage
   startup `ConfigIssue(error)` and `run_startup_config_check()` refuses to start unless
   the operator explicitly sets `SKIP_CONFIG_CHECK=true`. Delete the subclass the day the
   SDK grows its own type.
+- The SDK frames CLI stdout one JSON message at a time and **aborts the reader** — the whole
+  turn fails with `sdk_error` — when one message exceeds `max_buffer_size`. A tool result is one
+  message, so an MCP tool returning inline base64 images tripped the SDK's 1 MiB default (#183).
+  The gateway owns that limit too: `_get_max_buffer_size` always installs
+  `GATEWAY_MAX_BUFFER_SIZE_DEFAULT` (16 MiB) unless `CLAUDE_MAX_BUFFER_SIZE` overrides it, the
+  slash-command preflight shares it, `describe_sdk_stream_error` rewrites the fatal
+  `CLIJSONDecodeError` into actionable text (sizes + both remedies), and `_check_sdk_buffer`
+  warns at startup on invalid or ≤ 1 MiB values. There is no gateway-side truncation: the frame
+  is rejected inside the SDK transport before any hook or handler can see it, so a result above
+  the limit still kills the turn (the pre-framing tool-result budget is #185). Unit caveat: the
+  pinned SDK counts decoded text **characters** (`len(str)` on a `TextReceiveStream`), not UTF-8
+  bytes, despite saying "bytes" (upstream #1165) — `tests/test_sdk_buffer_semantics.py` pins
+  this against the real transport reader so an SDK upgrade that flips the unit fails loudly;
+  update the docs/error text together with the pin when it does.
 
 ## API Compatibility Boundaries
 

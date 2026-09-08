@@ -377,6 +377,16 @@ When the silence outlives the budget the turn ends with `response.failed` whose
 "connection lost". See `TOOL_STALL_TIMEOUT` / `MCP_TOOL_TIMEOUT` in
 `.env.example` for the budget hierarchy.
 
+A tool result can also be too *large* rather than too slow: the SDK frames the
+CLI's stdout one JSON message at a time and aborts the reader when one message
+exceeds `CLAUDE_MAX_BUFFER_SIZE` (gateway default 16 MiB; the SDK alone stops at
+1 MiB). That is a fatal `response.failed` with `error.code = "sdk_error"`, not a
+tool error the model can react to, and its `error.message` starts with
+`Claude SDK stream aborted: a single CLI message exceeded the stdout framing
+limit (<seen> characters, limit <limit>; …)` and names both remedies (narrow the
+tool call, or raise `CLAUDE_MAX_BUFFER_SIZE`). The unit is decoded text
+characters in the pinned SDK, not UTF-8 bytes (see the README env table).
+
 `response.hook_event` mirrors the SDK's hook lifecycle (PreToolUse, PostToolUse,
 Stop, …) so a UI can show "running <tool>…" / "<tool> finished". `phase` is
 `hook_started` or `hook_response`; `outcome` is present on `hook_response`.
