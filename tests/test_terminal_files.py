@@ -947,3 +947,38 @@ def test_the_reserve_covers_a_real_multipart_envelope(guarded_client, workspace)
 
     assert res.status_code == 200, res.text
     assert (workspace / name).stat().st_size == ceiling
+
+
+def test_a_request_cap_below_the_envelope_reserve_publishes_zero(client, monkeypatch):
+    """Uploads are impossible here, and the published number says so.
+
+    Reporting anything above zero would hand a client a size it can never
+    actually send; zero lets it disable the control instead of offering one
+    whose every use ends in a 413.
+    """
+    monkeypatch.setattr(tf, "MAX_REQUEST_SIZE", tf._MULTIPART_ENVELOPE_RESERVE)
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 10 * 1024 * 1024)
+
+    assert client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ] == 0
+    # Never negative — a smaller cap must not wrap into a permissive number.
+    monkeypatch.setattr(tf, "MAX_REQUEST_SIZE", 1)
+    assert client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ] == 0
+
+
+def test_zero_ceiling_refuses_even_an_empty_file(client, workspace, monkeypatch):
+    """The published zero has to be enforced, not just advertised."""
+    monkeypatch.setattr(tf, "MAX_REQUEST_SIZE", tf._MULTIPART_ENVELOPE_RESERVE)
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 10 * 1024 * 1024)
+
+    res = client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("tiny.bin", b"x", "application/octet-stream")},
+    )
+
+    assert res.status_code == 413
+    assert not (workspace / "tiny.bin").exists()

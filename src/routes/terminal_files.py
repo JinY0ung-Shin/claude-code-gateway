@@ -119,6 +119,13 @@ def _max_upload_bytes() -> int:
 
     Read through the module namespace rather than captured at import so a
     deployment (or a test) can move either limit without reimporting the route.
+
+    ``0`` is a real answer, not a failure: a deployment whose request cap is at
+    or below the envelope reserve cannot carry any file at all, and saying so is
+    the point of publishing the number. A client that sizes its picker against
+    this reports "uploads unavailable" instead of offering a control whose every
+    use ends in a 413. Whether such a configuration should be refused outright at
+    startup is a separate call and deliberately not made here.
     """
     ceiling = min(WORKSPACE_UPLOAD_MAX_BYTES, MAX_REQUEST_SIZE - _MULTIPART_ENVELOPE_RESERVE)
     return max(0, ceiling)
