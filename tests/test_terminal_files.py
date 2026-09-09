@@ -1,5 +1,6 @@
 """Tests for the Open Terminal-compatible read-only workspace file server."""
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -982,3 +983,108 @@ def test_zero_ceiling_refuses_even_an_empty_file(client, workspace, monkeypatch)
 
     assert res.status_code == 413
     assert not (workspace / "tiny.bin").exists()
+
+
+# ---------------------------------------------------------------------------
+# Content identity.
+#
+# A timestamp is a hint about when a write happened, not a name for what the
+# bytes are. `st_mtime_ns` does not fix that: filesystem granularity can
+# coalesce two writes, and `os.utime` can restore an old value outright. A
+# caller pinning a revision needs equality to imply the bytes are the same.
+# ---------------------------------------------------------------------------
+
+
+def _digest(client, path):
+    res = client.get(f"/files/digest?path={path}", headers={**_AUTH, **_USER})
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_identical_metadata_with_different_bytes_still_differs(client, workspace):
+    """The adversarial case: same size, deliberately identical mtime_ns.
+
+    This is what makes the token authoritative rather than a timing artifact —
+    it does not depend on the host filesystem happening to advance a clock.
+    """
+    target = workspace / "pinned.bin"
+    target.write_bytes(b"AAA")
+    before = _digest(client, "/pinned.bin")
+    stamp = target.stat().st_mtime_ns
+
+    target.write_bytes(b"BBB")  # same length, different content
+    os.utime(target, ns=(stamp, stamp))  # metadata restored to the old value
+
+    assert target.stat().st_mtime_ns == stamp, "test setup: mtime was not restored"
+    assert target.stat().st_size == 3
+
+    after = _digest(client, "/pinned.bin")
+    assert after["sha256"] != before["sha256"], (
+        "metadata matches but the bytes changed — equality of the published"
+        " token must not imply the content is the same revision"
+    )
+
+
+def test_the_same_bytes_give_the_same_digest(client, workspace):
+    """The other direction — a touched-but-unchanged file must stay pinned."""
+    target = workspace / "same.bin"
+    target.write_bytes(b"hello")
+    first = _digest(client, "/same.bin")
+
+    os.utime(target, ns=(1, 1))
+    target.write_bytes(b"hello")  # rewritten, identical content
+
+    assert _digest(client, "/same.bin")["sha256"] == first["sha256"]
+
+
+def test_an_ordinary_overwrite_changes_the_digest(client, workspace):
+    target = workspace / "note.txt"
+    target.write_text("one")
+    before = _digest(client, "/note.txt")
+    target.write_text("two different")
+
+    after = _digest(client, "/note.txt")
+    assert after["sha256"] != before["sha256"]
+    assert after["size"] == len("two different")
+
+
+def test_digest_matches_a_known_value(client, workspace):
+    """Pin the algorithm — a caller stores this string across restarts."""
+    (workspace / "known.bin").write_bytes(b"abc")
+
+    assert (
+        _digest(client, "/known.bin")["sha256"]
+        == hashlib.sha256(b"abc").hexdigest()
+    )
+
+
+def test_digest_streams_a_file_larger_than_one_chunk(client, workspace):
+    payload = os.urandom(3 * 1024 * 1024 + 7)
+    (workspace / "big.bin").write_bytes(payload)
+
+    got = _digest(client, "/big.bin")
+
+    assert got["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert got["size"] == len(payload)
+
+
+def test_digest_refuses_traversal_and_missing_files(client):
+    assert (
+        client.get("/files/digest?path=/../secret.txt", headers={**_AUTH, **_USER}).status_code
+        == 403
+    )
+    assert (
+        client.get("/files/digest?path=/nope.bin", headers={**_AUTH, **_USER}).status_code == 404
+    )
+
+
+def test_digest_requires_auth(client):
+    assert client.get("/files/digest?path=/a.txt").status_code in (401, 403)
+
+
+def test_digest_refuses_a_directory(client, workspace):
+    (workspace / "adir").mkdir()
+
+    assert (
+        client.get("/files/digest?path=/adir", headers={**_AUTH, **_USER}).status_code == 404
+    )
