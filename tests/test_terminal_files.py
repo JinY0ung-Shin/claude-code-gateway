@@ -843,3 +843,107 @@ def test_upload_ceiling_follows_the_smaller_of_the_two_limits(client, monkeypatc
 def test_limits_requires_auth(client):
     assert client.get("/files/limits", headers=_USER).status_code in (401, 403)
 
+
+
+# ---------------------------------------------------------------------------
+# The published ceiling through the REAL request-size stack.
+#
+# The `client` fixture mounts the router on a bare FastAPI app, so neither
+# RequestSizeLimitMiddleware nor ConcurrencyLimitMiddleware runs and the
+# request-cap-derived ceiling is never exercised. These build the same
+# middleware stack the server assembles, and drive WORKSPACE_UPLOAD_MAX_BYTES
+# ABOVE MAX_REQUEST_SIZE so the ceiling can only come from the request cap.
+# ---------------------------------------------------------------------------
+
+_STACK_REQUEST_SIZE = 64 * 1024
+
+
+@pytest.fixture
+def guarded_client(workspace, monkeypatch):
+    """The router behind both real body-size guards."""
+    from src import concurrency_middleware as cm
+    from src import main as gateway_main
+    from src.concurrency_middleware import ConcurrencyLimitMiddleware
+
+    _patch_api_key(monkeypatch, "testkey")
+
+    def _resolve(user, backend=None):
+        if user == "alice":
+            return workspace
+        raise ValueError("bad user")
+
+    monkeypatch.setattr(tf.workspace_manager, "resolve", _resolve)
+
+    # Every module reads the cap from its own namespace; move all three or the
+    # guards disagree about where the boundary is.
+    for module in (tf, cm, gateway_main):
+        monkeypatch.setattr(module, "MAX_REQUEST_SIZE", _STACK_REQUEST_SIZE)
+    # Far above the request cap: the ceiling must come from the cap alone.
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 1024 * 1024 * 1024)
+
+    app = FastAPI()
+    app.include_router(router)
+    app.add_middleware(gateway_main.RequestSizeLimitMiddleware)
+    app.add_middleware(ConcurrencyLimitMiddleware)
+    return TestClient(app)
+
+
+def test_published_ceiling_survives_the_real_multipart_boundary(guarded_client, workspace):
+    """A file of exactly the advertised size must get through the whole stack.
+
+    This is the PR's actual claim. Publishing a number a real request cannot
+    carry is worse than publishing nothing: the client sizes its chip against
+    it, uploads, and gets a 413 it was told could not happen.
+    """
+    ceiling = guarded_client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ]
+    assert ceiling == _STACK_REQUEST_SIZE - tf._MULTIPART_ENVELOPE_RESERVE
+
+    res = guarded_client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("exactly.bin", b"x" * ceiling, "application/octet-stream")},
+    )
+
+    assert res.status_code == 200, res.text
+    assert (workspace / "exactly.bin").stat().st_size == ceiling
+
+
+def test_one_byte_over_the_published_ceiling_is_refused_by_the_stack(
+    guarded_client, workspace
+):
+    """The other side of the same boundary — and nothing half-written."""
+    ceiling = guarded_client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ]
+
+    res = guarded_client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("over.bin", b"x" * (ceiling + 1), "application/octet-stream")},
+    )
+
+    assert res.status_code == 413, res.text
+    assert not (workspace / "over.bin").exists()
+
+
+def test_the_reserve_covers_a_real_multipart_envelope(guarded_client, workspace):
+    """The 8 KiB reserve is a guess unless a real envelope fits inside it.
+
+    A ceiling-sized file plus its multipart headers must stay under the
+    request cap, or the guards reject what /files/limits promised.
+    """
+    ceiling = guarded_client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ]
+    # A deliberately long filename — the envelope carries it twice.
+    name = "a" * 200 + ".bin"
+    res = guarded_client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": (name, b"x" * ceiling, "application/octet-stream")},
+    )
+
+    assert res.status_code == 200, res.text
+    assert (workspace / name).stat().st_size == ceiling
