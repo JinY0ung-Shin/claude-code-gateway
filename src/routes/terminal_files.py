@@ -11,6 +11,7 @@ Contract (what FileNav calls):
 - ``POST /files/cwd``  {path}         -> ``{"cwd": path}`` (validate; cwd is client-tracked)
 - ``GET  /files/list?directory=<p>``  -> ``{"entries": [{name,type,size,modified}]}``
 - ``GET  /files/search?query=<q>``    -> ``{"results": [{path,name,type,size,modified}], "truncated"}``
+- ``GET  /files/digest?path=<p>``     -> ``{"path","size","sha256"}`` (content identity)
 - ``GET  /files/read?path=<p>``       -> text ``{path,total_lines,content}`` | raw bytes (binary)
 - ``GET  /files/view?path=<p>``       -> raw bytes (download)
 - ``GET  /files/serve/<path>``        -> raw bytes, inline (HTML iframe preview; relative assets)
@@ -55,6 +56,7 @@ Security:
 
 import ctypes
 import errno
+import hashlib
 import io
 import mimetypes
 import os
@@ -451,6 +453,48 @@ async def search_files(
         return {"results": matches[:limit], "truncated": truncated}
 
     return await run_in_threadpool(_search)
+
+
+@router.get("/files/digest")
+async def file_digest(
+    request: Request,
+    path: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    """Content identity for one file: equality of ``sha256`` means equal bytes.
+
+    ``modified``/``st_mtime`` cannot carry this, at any resolution. A timestamp
+    says when a write happened, not what the bytes are: filesystem granularity
+    can coalesce two writes, and a metadata-preserving writer can restore an old
+    value with ``os.utime``. A caller that pins a file's revision — ChatDRAGON
+    pins chat attachments so a later overwrite cannot be accepted as the evidence
+    an earlier turn read — needs equality to actually imply sameness, so it needs
+    the content.
+
+    This deliberately does NOT live on ``/files/list`` or ``/files/search``:
+    hashing every entry would make a directory listing cost the size of the
+    directory. It is asked for one file at a time, at the moment a caller pins
+    or re-checks that file.
+    """
+    await verify_api_key(request, credentials)
+    _ensure_api_key()
+    root = _workspace_root(_require_user(request))
+    target = _resolve_or_403(root, path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+
+    def _digest() -> tuple[str, int]:
+        h = hashlib.sha256()
+        size = 0
+        # Streamed: pinning a revision must not depend on the file fitting in memory.
+        with target.open("rb") as fh:
+            while chunk := fh.read(1024 * 1024):
+                h.update(chunk)
+                size += len(chunk)
+        return h.hexdigest(), size
+
+    digest, size = await run_in_threadpool(_digest)
+    return {"path": path, "size": size, "sha256": digest}
 
 
 @router.get("/files/read")
