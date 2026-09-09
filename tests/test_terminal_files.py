@@ -781,3 +781,65 @@ def test_serve_hidden_file_is_404_when_enabled(client, workspace, monkeypatch):
     d = str(workspace.resolve())
     r = client.get(f"/files/serve{d}/.env", headers={**_AUTH, **_USER})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Upload ceiling: published, enforced, and honest at the boundary.
+# ---------------------------------------------------------------------------
+
+
+def test_limits_reports_a_ceiling_below_the_request_cap(client):
+    """The published number must leave room for the multipart envelope.
+
+    A client sizes its own refusal off this value, so advertising the raw
+    request cap would reject a file of exactly the advertised size once the
+    boundary and part headers are added.
+    """
+    res = client.get("/files/limits", headers={**_AUTH, **_USER})
+    assert res.status_code == 200
+    ceiling = res.json()["max_upload_bytes"]
+    assert 0 < ceiling < tf.MAX_REQUEST_SIZE
+
+
+def test_upload_accepts_exactly_the_published_ceiling(client, workspace, monkeypatch):
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 1024)
+    ceiling = client.get("/files/limits", headers={**_AUTH, **_USER}).json()["max_upload_bytes"]
+    assert ceiling == 1024
+    res = client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("fits.bin", b"x" * ceiling, "application/octet-stream")},
+    )
+    assert res.status_code == 200
+    assert (workspace / "fits.bin").stat().st_size == ceiling
+
+
+def test_upload_over_ceiling_is_413_and_writes_nothing(client, workspace, monkeypatch):
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 1024)
+    res = client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("too-big.bin", b"x" * 1025, "application/octet-stream")},
+    )
+    assert res.status_code == 413
+    assert "1024" in res.json()["detail"]
+    # A rejected upload must not leave a truncated file behind for the agent to read.
+    assert not (workspace / "too-big.bin").exists()
+
+
+def test_upload_ceiling_follows_the_smaller_of_the_two_limits(client, monkeypatch):
+    """The JSON cap wins when it is the tighter one.
+
+    Every POST body is buffered whole under ``MAX_REQUEST_SIZE``, so an upload
+    limit above it could never be honoured — reporting it would send clients
+    into a request-boundary rejection they cannot explain.
+    """
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 100 * 1024 * 1024)
+    monkeypatch.setattr(tf, "MAX_REQUEST_SIZE", 64 * 1024)
+    ceiling = client.get("/files/limits", headers={**_AUTH, **_USER}).json()["max_upload_bytes"]
+    assert ceiling == 64 * 1024 - tf._MULTIPART_ENVELOPE_RESERVE
+
+
+def test_limits_requires_auth(client):
+    assert client.get("/files/limits", headers=_USER).status_code in (401, 403)
+
