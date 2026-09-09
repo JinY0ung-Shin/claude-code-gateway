@@ -42,12 +42,19 @@ the agent disagree about which workspace they were in for one and the same calle
 `/v1/responses` never truncated.
 
 `WORKSPACE_LEGACY_LOCALPART_KEY=true` restores the old truncating key so an existing
-deployment can stage a directory migration. It re-opens the cross-user hole described
-above and logs a warning on every resolve; leave it unset.
+deployment can stage a directory migration. The switch is resolved by the shared
+`WorkspaceManager`, so while it is enabled **all** workspace consumers — `/v1/responses`,
+`/files/*`, agent resources, and other direct resolver users — land on the same legacy
+path. This avoids reintroducing the old file-browser-vs-agent split, but it still re-opens
+the cross-user collision described above and logs a warning on every named resolve. Leave
+it unset except during a controlled migration window.
 
 If you are upgrading a deployment whose identities contain `@`, the on-disk directory for
-those users changes from `<localpart>/` to `<full-identity>/`. Rename the directories (or
-run with the legacy switch while you do) before pointing traffic at the new build.
+those users changes from `<localpart>/` to `<full-identity>/`. Prefer renaming the
+directories before pointing traffic at the new build. If a staged migration is unavoidable,
+the legacy switch may be used temporarily; because it deliberately collapses principals
+sharing a localpart, restrict access during that window and disable it as soon as the
+filesystem move is complete.
 
 ## Workspace file browser note
 
