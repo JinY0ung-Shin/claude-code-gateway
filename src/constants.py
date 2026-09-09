@@ -39,6 +39,18 @@ DEFAULT_HOST = (
 )  # nosec B104
 MAX_REQUEST_SIZE = parse_int_env("MAX_REQUEST_SIZE", 10 * 1024 * 1024)  # 10MB
 
+# Ceiling for ONE workspace file upload (``POST /files/upload``), kept separate
+# from ``MAX_REQUEST_SIZE`` so the two can be sized independently: the JSON cap
+# protects ``/v1/responses`` from oversized agent payloads, while this one bounds
+# what a file manager may drop into a workspace. Raising the JSON cap for large
+# tool results should not silently un-cap uploads, and vice versa.
+#
+# The effective ceiling is the SMALLER of the two (see
+# ``terminal_files._max_upload_bytes``): every POST body is buffered whole by
+# ConcurrencyLimitMiddleware under ``MAX_REQUEST_SIZE``, so an upload limit above
+# that would be a promise the request boundary never lets a client keep.
+WORKSPACE_UPLOAD_MAX_BYTES = parse_int_env("WORKSPACE_UPLOAD_MAX_BYTES", 10 * 1024 * 1024)
+
 # Permission Modes
 PERMISSION_MODE_BYPASS = "bypassPermissions"
 

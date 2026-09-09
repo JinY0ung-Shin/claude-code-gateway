@@ -71,6 +71,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from src.auth import auth_manager, security, verify_api_key
+from src.constants import MAX_REQUEST_SIZE, WORKSPACE_UPLOAD_MAX_BYTES
 from src.workspace_manager import workspace_manager
 
 
@@ -104,6 +105,30 @@ _MAX_READ_BYTES = 5 * 1024 * 1024
 # email/identity whose localpart (before '@') keys the workspace, matching how
 # the pipe derives body.user. Default is deliberately vendor-neutral.
 _DEFAULT_USER_HEADER = "X-User-Email"
+
+# Room for the multipart envelope around the file bytes: boundary lines, the
+# part headers and a filename of up to 255 bytes. The request boundary counts
+# the WHOLE body, so a ceiling advertised as the file size must leave space for
+# the wrapper — otherwise a file of exactly the advertised size is rejected and
+# the number we published is a lie.
+_MULTIPART_ENVELOPE_RESERVE = 8192
+
+
+def _max_upload_bytes() -> int:
+    """Largest single file ``POST /files/upload`` will actually accept.
+
+    Read through the module namespace rather than captured at import so a
+    deployment (or a test) can move either limit without reimporting the route.
+
+    ``0`` is a real answer, not a failure: a deployment whose request cap is at
+    or below the envelope reserve cannot carry any file at all, and saying so is
+    the point of publishing the number. A client that sizes its picker against
+    this reports "uploads unavailable" instead of offering a control whose every
+    use ends in a 413. Whether such a configuration should be refused outright at
+    startup is a separate call and deliberately not made here.
+    """
+    ceiling = min(WORKSPACE_UPLOAD_MAX_BYTES, MAX_REQUEST_SIZE - _MULTIPART_ENVELOPE_RESERVE)
+    return max(0, ceiling)
 
 
 def _user_header() -> str:
@@ -269,6 +294,23 @@ async def tool_specs(
         "info": {"title": "Oh My Gateway Workspace Files", "version": "1.0.0"},
         "paths": {},
     }
+
+
+@router.get("/files/limits")
+async def get_limits(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    """Publish the upload ceiling so clients can refuse a file before sending it.
+
+    Without this the limit is only discoverable by hitting it, and what comes
+    back is the request-boundary 413 — shaped for the responses API and phrased
+    in whole-request bytes, which no file manager can turn into "this file is
+    too big". A client that reads this number can say so before the upload.
+    """
+    await verify_api_key(request, credentials)
+    _ensure_api_key()
+    return {"max_upload_bytes": _max_upload_bytes()}
 
 
 @router.get("/files/cwd")
@@ -536,6 +578,17 @@ async def upload_file(
     target = _resolve_or_403(root, f"{directory}/{name}")
 
     data = await file.read()
+    # Defence in depth against the request boundary, not a duplicate of it: the
+    # middleware caps the whole body under MAX_REQUEST_SIZE, while this bounds
+    # the file itself under its own limit. They are separate knobs, so an
+    # operator who raises the JSON cap does not silently widen what may be
+    # written into a workspace.
+    ceiling = _max_upload_bytes()
+    if len(data) > ceiling:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file exceeds the upload limit of {ceiling} bytes",
+        )
     if no_clobber:
 
         def _write_exclusive() -> None:
