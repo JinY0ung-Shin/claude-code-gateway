@@ -1,5 +1,6 @@
 """Tests for the Open Terminal-compatible read-only workspace file server."""
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -781,3 +782,309 @@ def test_serve_hidden_file_is_404_when_enabled(client, workspace, monkeypatch):
     d = str(workspace.resolve())
     r = client.get(f"/files/serve{d}/.env", headers={**_AUTH, **_USER})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Upload ceiling: published, enforced, and honest at the boundary.
+# ---------------------------------------------------------------------------
+
+
+def test_limits_reports_a_ceiling_below_the_request_cap(client):
+    """The published number must leave room for the multipart envelope.
+
+    A client sizes its own refusal off this value, so advertising the raw
+    request cap would reject a file of exactly the advertised size once the
+    boundary and part headers are added.
+    """
+    res = client.get("/files/limits", headers={**_AUTH, **_USER})
+    assert res.status_code == 200
+    ceiling = res.json()["max_upload_bytes"]
+    assert 0 < ceiling < tf.MAX_REQUEST_SIZE
+
+
+def test_upload_accepts_exactly_the_published_ceiling(client, workspace, monkeypatch):
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 1024)
+    ceiling = client.get("/files/limits", headers={**_AUTH, **_USER}).json()["max_upload_bytes"]
+    assert ceiling == 1024
+    res = client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("fits.bin", b"x" * ceiling, "application/octet-stream")},
+    )
+    assert res.status_code == 200
+    assert (workspace / "fits.bin").stat().st_size == ceiling
+
+
+def test_upload_over_ceiling_is_413_and_writes_nothing(client, workspace, monkeypatch):
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 1024)
+    res = client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("too-big.bin", b"x" * 1025, "application/octet-stream")},
+    )
+    assert res.status_code == 413
+    assert "1024" in res.json()["detail"]
+    # A rejected upload must not leave a truncated file behind for the agent to read.
+    assert not (workspace / "too-big.bin").exists()
+
+
+def test_upload_ceiling_follows_the_smaller_of_the_two_limits(client, monkeypatch):
+    """The JSON cap wins when it is the tighter one.
+
+    Every POST body is buffered whole under ``MAX_REQUEST_SIZE``, so an upload
+    limit above it could never be honoured — reporting it would send clients
+    into a request-boundary rejection they cannot explain.
+    """
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 100 * 1024 * 1024)
+    monkeypatch.setattr(tf, "MAX_REQUEST_SIZE", 64 * 1024)
+    ceiling = client.get("/files/limits", headers={**_AUTH, **_USER}).json()["max_upload_bytes"]
+    assert ceiling == 64 * 1024 - tf._MULTIPART_ENVELOPE_RESERVE
+
+
+def test_limits_requires_auth(client):
+    assert client.get("/files/limits", headers=_USER).status_code in (401, 403)
+
+
+
+# ---------------------------------------------------------------------------
+# The published ceiling through the REAL request-size stack.
+#
+# The `client` fixture mounts the router on a bare FastAPI app, so neither
+# RequestSizeLimitMiddleware nor ConcurrencyLimitMiddleware runs and the
+# request-cap-derived ceiling is never exercised. These build the same
+# middleware stack the server assembles, and drive WORKSPACE_UPLOAD_MAX_BYTES
+# ABOVE MAX_REQUEST_SIZE so the ceiling can only come from the request cap.
+# ---------------------------------------------------------------------------
+
+_STACK_REQUEST_SIZE = 64 * 1024
+
+
+@pytest.fixture
+def guarded_client(workspace, monkeypatch):
+    """The router behind both real body-size guards."""
+    from src import concurrency_middleware as cm
+    from src import main as gateway_main
+    from src.concurrency_middleware import ConcurrencyLimitMiddleware
+
+    _patch_api_key(monkeypatch, "testkey")
+
+    def _resolve(user, backend=None):
+        if user == "alice":
+            return workspace
+        raise ValueError("bad user")
+
+    monkeypatch.setattr(tf.workspace_manager, "resolve", _resolve)
+
+    # Every module reads the cap from its own namespace; move all three or the
+    # guards disagree about where the boundary is.
+    for module in (tf, cm, gateway_main):
+        monkeypatch.setattr(module, "MAX_REQUEST_SIZE", _STACK_REQUEST_SIZE)
+    # Far above the request cap: the ceiling must come from the cap alone.
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 1024 * 1024 * 1024)
+
+    app = FastAPI()
+    app.include_router(router)
+    app.add_middleware(gateway_main.RequestSizeLimitMiddleware)
+    app.add_middleware(ConcurrencyLimitMiddleware)
+    return TestClient(app)
+
+
+def test_published_ceiling_survives_the_real_multipart_boundary(guarded_client, workspace):
+    """A file of exactly the advertised size must get through the whole stack.
+
+    This is the PR's actual claim. Publishing a number a real request cannot
+    carry is worse than publishing nothing: the client sizes its chip against
+    it, uploads, and gets a 413 it was told could not happen.
+    """
+    ceiling = guarded_client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ]
+    assert ceiling == _STACK_REQUEST_SIZE - tf._MULTIPART_ENVELOPE_RESERVE
+
+    res = guarded_client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("exactly.bin", b"x" * ceiling, "application/octet-stream")},
+    )
+
+    assert res.status_code == 200, res.text
+    assert (workspace / "exactly.bin").stat().st_size == ceiling
+
+
+def test_one_byte_over_the_published_ceiling_is_refused_by_the_stack(
+    guarded_client, workspace
+):
+    """The other side of the same boundary — and nothing half-written."""
+    ceiling = guarded_client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ]
+
+    res = guarded_client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("over.bin", b"x" * (ceiling + 1), "application/octet-stream")},
+    )
+
+    assert res.status_code == 413, res.text
+    assert not (workspace / "over.bin").exists()
+
+
+def test_the_reserve_covers_a_real_multipart_envelope(guarded_client, workspace):
+    """The 8 KiB reserve is a guess unless a real envelope fits inside it.
+
+    A ceiling-sized file plus its multipart headers must stay under the
+    request cap, or the guards reject what /files/limits promised.
+    """
+    ceiling = guarded_client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ]
+    # A deliberately long filename — the envelope carries it twice.
+    name = "a" * 200 + ".bin"
+    res = guarded_client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": (name, b"x" * ceiling, "application/octet-stream")},
+    )
+
+    assert res.status_code == 200, res.text
+    assert (workspace / name).stat().st_size == ceiling
+
+
+def test_a_request_cap_below_the_envelope_reserve_publishes_zero(client, monkeypatch):
+    """Uploads are impossible here, and the published number says so.
+
+    Reporting anything above zero would hand a client a size it can never
+    actually send; zero lets it disable the control instead of offering one
+    whose every use ends in a 413.
+    """
+    monkeypatch.setattr(tf, "MAX_REQUEST_SIZE", tf._MULTIPART_ENVELOPE_RESERVE)
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 10 * 1024 * 1024)
+
+    assert client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ] == 0
+    # Never negative — a smaller cap must not wrap into a permissive number.
+    monkeypatch.setattr(tf, "MAX_REQUEST_SIZE", 1)
+    assert client.get("/files/limits", headers={**_AUTH, **_USER}).json()[
+        "max_upload_bytes"
+    ] == 0
+
+
+def test_zero_ceiling_refuses_even_an_empty_file(client, workspace, monkeypatch):
+    """The published zero has to be enforced, not just advertised."""
+    monkeypatch.setattr(tf, "MAX_REQUEST_SIZE", tf._MULTIPART_ENVELOPE_RESERVE)
+    monkeypatch.setattr(tf, "WORKSPACE_UPLOAD_MAX_BYTES", 10 * 1024 * 1024)
+
+    res = client.post(
+        "/files/upload?directory=/",
+        headers={**_AUTH, **_USER},
+        files={"file": ("tiny.bin", b"x", "application/octet-stream")},
+    )
+
+    assert res.status_code == 413
+    assert not (workspace / "tiny.bin").exists()
+
+
+# ---------------------------------------------------------------------------
+# Content identity.
+#
+# A timestamp is a hint about when a write happened, not a name for what the
+# bytes are. `st_mtime_ns` does not fix that: filesystem granularity can
+# coalesce two writes, and `os.utime` can restore an old value outright. A
+# caller pinning a revision needs equality to imply the bytes are the same.
+# ---------------------------------------------------------------------------
+
+
+def _digest(client, path):
+    res = client.get(f"/files/digest?path={path}", headers={**_AUTH, **_USER})
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_identical_metadata_with_different_bytes_still_differs(client, workspace):
+    """The adversarial case: same size, deliberately identical mtime_ns.
+
+    This is what makes the token authoritative rather than a timing artifact —
+    it does not depend on the host filesystem happening to advance a clock.
+    """
+    target = workspace / "pinned.bin"
+    target.write_bytes(b"AAA")
+    before = _digest(client, "/pinned.bin")
+    stamp = target.stat().st_mtime_ns
+
+    target.write_bytes(b"BBB")  # same length, different content
+    os.utime(target, ns=(stamp, stamp))  # metadata restored to the old value
+
+    assert target.stat().st_mtime_ns == stamp, "test setup: mtime was not restored"
+    assert target.stat().st_size == 3
+
+    after = _digest(client, "/pinned.bin")
+    assert after["sha256"] != before["sha256"], (
+        "metadata matches but the bytes changed — equality of the published"
+        " token must not imply the content is the same revision"
+    )
+
+
+def test_the_same_bytes_give_the_same_digest(client, workspace):
+    """The other direction — a touched-but-unchanged file must stay pinned."""
+    target = workspace / "same.bin"
+    target.write_bytes(b"hello")
+    first = _digest(client, "/same.bin")
+
+    os.utime(target, ns=(1, 1))
+    target.write_bytes(b"hello")  # rewritten, identical content
+
+    assert _digest(client, "/same.bin")["sha256"] == first["sha256"]
+
+
+def test_an_ordinary_overwrite_changes_the_digest(client, workspace):
+    target = workspace / "note.txt"
+    target.write_text("one")
+    before = _digest(client, "/note.txt")
+    target.write_text("two different")
+
+    after = _digest(client, "/note.txt")
+    assert after["sha256"] != before["sha256"]
+    assert after["size"] == len("two different")
+
+
+def test_digest_matches_a_known_value(client, workspace):
+    """Pin the algorithm — a caller stores this string across restarts."""
+    (workspace / "known.bin").write_bytes(b"abc")
+
+    assert (
+        _digest(client, "/known.bin")["sha256"]
+        == hashlib.sha256(b"abc").hexdigest()
+    )
+
+
+def test_digest_streams_a_file_larger_than_one_chunk(client, workspace):
+    payload = os.urandom(3 * 1024 * 1024 + 7)
+    (workspace / "big.bin").write_bytes(payload)
+
+    got = _digest(client, "/big.bin")
+
+    assert got["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert got["size"] == len(payload)
+
+
+def test_digest_refuses_traversal_and_missing_files(client):
+    assert (
+        client.get("/files/digest?path=/../secret.txt", headers={**_AUTH, **_USER}).status_code
+        == 403
+    )
+    assert (
+        client.get("/files/digest?path=/nope.bin", headers={**_AUTH, **_USER}).status_code == 404
+    )
+
+
+def test_digest_requires_auth(client):
+    assert client.get("/files/digest?path=/a.txt").status_code in (401, 403)
+
+
+def test_digest_refuses_a_directory(client, workspace):
+    (workspace / "adir").mkdir()
+
+    assert (
+        client.get("/files/digest?path=/adir", headers={**_AUTH, **_USER}).status_code == 404
+    )

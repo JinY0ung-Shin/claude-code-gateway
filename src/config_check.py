@@ -514,6 +514,52 @@ def _check_stall_hierarchy() -> List[ConfigIssue]:
     return issues
 
 
+def _check_sdk_buffer() -> List[ConfigIssue]:
+    """``CLAUDE_MAX_BUFFER_SIZE`` bounds ONE CLI stdout message, tool results
+    included; a breach is a fatal SDK reader error, not a tool error (#183).
+
+    Unset, the gateway installs its own 16 Mi product default
+    (``src.constants.GATEWAY_MAX_BUFFER_SIZE_DEFAULT``) instead of the SDK's
+    1 Mi. An invalid value silently falls back to that default, and a value at
+    or below the SDK's 1 Mi re-creates the oversized-tool-result failure the
+    default exists to prevent — both are worth a startup warning. The unit is
+    decoded text characters in the pinned SDK, not bytes (see
+    ``_get_max_buffer_size``); the messages say so. Mirrors
+    ``src.backends.claude.client._get_max_buffer_size`` with os.environ only
+    (early-import rule).
+    """
+    raw = (os.getenv("CLAUDE_MAX_BUFFER_SIZE") or "").strip()
+    if not raw:
+        return []
+    gateway_default = 16 * 1024 * 1024
+    sdk_default = 1024 * 1024
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        return [
+            ConfigIssue(
+                "warning",
+                f"CLAUDE_MAX_BUFFER_SIZE={raw!r} is not a positive integer; the "
+                f"gateway default ({gateway_default}) applies.",
+            )
+        ]
+    if value <= sdk_default:
+        return [
+            ConfigIssue(
+                "warning",
+                f"CLAUDE_MAX_BUFFER_SIZE={value} is at or below the Claude SDK's own "
+                f"default of {sdk_default} (decoded text characters, not bytes, in "
+                "the pinned SDK): any single tool result larger than this (e.g. an "
+                "MCP tool returning inline base64 images) aborts the whole turn "
+                "with sdk_error. Unset it to use the gateway default "
+                f"({gateway_default}) or raise it.",
+            )
+        ]
+    return []
+
+
 def check_config() -> List[ConfigIssue]:
     """Inspect the environment and return all detected configuration issues."""
     backends = _enabled_backends()
@@ -530,6 +576,7 @@ def check_config() -> List[ConfigIssue]:
     issues.extend(_check_mcp_server_env())
     issues.extend(_check_claude_settings_env())
     issues.extend(_check_stall_hierarchy())
+    issues.extend(_check_sdk_buffer())
     return issues
 
 

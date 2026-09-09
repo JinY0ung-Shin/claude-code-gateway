@@ -39,6 +39,18 @@ DEFAULT_HOST = (
 )  # nosec B104
 MAX_REQUEST_SIZE = parse_int_env("MAX_REQUEST_SIZE", 10 * 1024 * 1024)  # 10MB
 
+# Ceiling for ONE workspace file upload (``POST /files/upload``), kept separate
+# from ``MAX_REQUEST_SIZE`` so the two can be sized independently: the JSON cap
+# protects ``/v1/responses`` from oversized agent payloads, while this one bounds
+# what a file manager may drop into a workspace. Raising the JSON cap for large
+# tool results should not silently un-cap uploads, and vice versa.
+#
+# The effective ceiling is the SMALLER of the two (see
+# ``terminal_files._max_upload_bytes``): every POST body is buffered whole by
+# ConcurrencyLimitMiddleware under ``MAX_REQUEST_SIZE``, so an upload limit above
+# that would be a promise the request boundary never lets a client keep.
+WORKSPACE_UPLOAD_MAX_BYTES = parse_int_env("WORKSPACE_UPLOAD_MAX_BYTES", 10 * 1024 * 1024)
+
 # Permission Modes
 PERMISSION_MODE_BYPASS = "bypassPermissions"
 
@@ -228,6 +240,19 @@ CLI_BASH_MAX_TIMEOUT_MS = 600_000
 # when the operator did not provide a positive MCP_TOOL_TIMEOUT, so every Claude
 # child inherits the same ceiling the gateway uses for derivation.
 GATEWAY_MCP_TOOL_TIMEOUT_DEFAULT_MS = 600_000
+
+# The Claude Agent SDK frames CLI stdout one NDJSON message at a time and aborts
+# the whole message reader when a single frame exceeds ``max_buffer_size``
+# (SDK default 1 MiB). A tool result is one frame, so an MCP tool that returns
+# inline base64 thumbnails (#183) killed the turn with a fatal
+# "JSON message exceeded maximum buffer size" instead of handing the model a
+# tool error. Like the MCP watchdog above, the gateway owns a product default
+# that is large enough for legitimate rich tool results; operators can still
+# raise or lower it with ``CLAUDE_MAX_BUFFER_SIZE``. It is a framing threshold,
+# not an exact memory quota: the pinned SDK counts decoded text CHARACTERS, not
+# UTF-8 bytes (see ``_get_max_buffer_size`` and tests/test_sdk_buffer_semantics.py).
+SDK_DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024
+GATEWAY_MAX_BUFFER_SIZE_DEFAULT = 16 * 1024 * 1024
 
 
 def _positive_ms_env(name: str) -> int:

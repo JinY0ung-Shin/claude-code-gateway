@@ -171,6 +171,7 @@ async def test_fetch_commands_uses_backend_setting_sources(monkeypatch, tmp_path
     class FakeClient:
         def __init__(self, options):
             self.options = options
+            captured["max_buffer_size"] = getattr(options, "max_buffer_size", None)
 
         async def __aenter__(self):
             return self
@@ -182,6 +183,7 @@ async def test_fetch_commands_uses_backend_setting_sources(monkeypatch, tmp_path
             return {"commands": [{"name": "brain-search"}]}
 
     monkeypatch.setenv("CLAUDE_SETTING_SOURCES", "user,project,local")
+    monkeypatch.delenv("CLAUDE_MAX_BUFFER_SIZE", raising=False)
     monkeypatch.setattr(sc, "ClaudeAgentOptions", FakeOptions)
     monkeypatch.setattr(sc, "ClaudeSDKClient", FakeClient)
 
@@ -190,6 +192,11 @@ async def test_fetch_commands_uses_backend_setting_sources(monkeypatch, tmp_path
     assert names == {"brain-search"}
     assert captured["cwd"] == tmp_path
     assert captured["setting_sources"] == ["user", "project", "local"]
+    # The preflight shares the backend's stdout framing limit (#183): a plugin
+    # catalog large enough to trip the SDK's 1 MiB default must not abort it.
+    from src.constants import GATEWAY_MAX_BUFFER_SIZE_DEFAULT
+
+    assert captured["max_buffer_size"] == GATEWAY_MAX_BUFFER_SIZE_DEFAULT
 
 
 async def test_ttl_cache_refreshes_after_expiry(monkeypatch):
