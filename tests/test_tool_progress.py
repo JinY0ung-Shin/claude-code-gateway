@@ -534,7 +534,15 @@ class TestToolStallDefaults:
         )
 
     def test_rounds_partial_seconds_up(self, monkeypatch):
+        """Both watchdogs have to come down to observe the rounding.
+
+        The effective MCP ceiling is 600000 ms whenever the operator leaves
+        ``MCP_TOOL_TIMEOUT`` unset, and the budget derives from the *larger*
+        watchdog — so lowering Bash alone leaves the max at 600 s and the
+        ceiling division unexercised."""
+        monkeypatch.setenv("MCP_TOOL_TIMEOUT", "1500")
         monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "1500")
+        assert constants.cli_tool_watchdog_ms() == 1500
         assert (
             constants._tool_stall_timeout_default()
             == 2 + constants.TOOL_STALL_GRACE_SECONDS
@@ -570,27 +578,53 @@ class TestStallHierarchyCheck:
         )  # → tool stall 960 < max age 1800
         assert config_check._check_stall_hierarchy() == []
 
-    def test_mcp_tool_timeout_above_explicit_tool_budget_warns(self, monkeypatch):
+    def test_mcp_tool_timeout_above_explicit_tool_budget_is_an_error(self, monkeypatch):
+        """Error, not advice: serving traffic here reintroduces the inversion."""
         monkeypatch.setenv("MCP_TOOL_TIMEOUT", "900000")
         monkeypatch.setenv("TOOL_STALL_TIMEOUT", "600")
         issues = config_check._check_stall_hierarchy()
         assert any(
-            "MCP_TOOL_TIMEOUT" in i.message and i.severity == "warning" for i in issues
+            "MCP_TOOL_TIMEOUT" in i.message and i.severity == "error" for i in issues
         )
 
     def test_explicit_tool_budget_below_bash_max_warns(self, monkeypatch):
-        """The Bash watchdog counts even with no env set — the CLI's own 600 s max."""
+        """The Bash watchdog counts even with no Bash env set — the CLI's own 600 s max.
+
+        ``MCP_TOOL_TIMEOUT`` is lowered only so Bash is the strictly larger
+        watchdog and therefore the one named: the effective MCP ceiling is also
+        600000 ms by default, and the report attributes a tie to MCP."""
+        monkeypatch.setenv("MCP_TOOL_TIMEOUT", "120000")
         monkeypatch.setenv("TOOL_STALL_TIMEOUT", "300")
         issues = config_check._check_stall_hierarchy()
         assert any("Bash timeout 600000ms" in i.message for i in issues)
 
-    def test_lowered_bash_max_clears_a_short_tool_budget(self, monkeypatch):
+    def test_lowered_watchdogs_clear_a_short_tool_budget(self, monkeypatch):
+        """Both watchdogs gate the budget, so both have to come down.
+
+        Lowering ``BASH_MAX_TIMEOUT_MS`` alone leaves the effective MCP ceiling
+        at 600000 ms, and the budget derives from the larger of the two."""
+        monkeypatch.setenv("MCP_TOOL_TIMEOUT", "120000")
         monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "120000")
         monkeypatch.setenv("TOOL_STALL_TIMEOUT", "300")
         assert config_check._check_stall_hierarchy() == []
 
+    def test_lowered_bash_max_alone_does_not_clear_a_short_tool_budget(self, monkeypatch):
+        """The MCP ceiling is a floor under the watchdog — regression guard."""
+        monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "120000")
+        monkeypatch.setenv("TOOL_STALL_TIMEOUT", "300")
+        issues = config_check._check_stall_hierarchy()
+        assert any(
+            "MCP_TOOL_TIMEOUT=600000ms" in i.message and i.severity == "error"
+            for i in issues
+        )
+
     def test_bash_default_alone_does_not_clear_a_short_tool_budget(self, monkeypatch):
-        """Mirror of the constants rule: the default is not the ceiling."""
+        """Mirror of the constants rule: the default is not the ceiling.
+
+        ``MCP_TOOL_TIMEOUT`` is lowered only so Bash is the named watchdog (see
+        the sibling test above); the point is that ``BASH_DEFAULT_TIMEOUT_MS``
+        does not pull the Bash ceiling down from 600000 ms."""
+        monkeypatch.setenv("MCP_TOOL_TIMEOUT", "120000")
         monkeypatch.setenv("BASH_DEFAULT_TIMEOUT_MS", "120000")
         monkeypatch.setenv("TOOL_STALL_TIMEOUT", "300")
         issues = config_check._check_stall_hierarchy()

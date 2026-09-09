@@ -8,6 +8,13 @@ import os
 # integration tests inherit this env, so their gateways skip .env too.
 os.environ.setdefault("GATEWAY_SKIP_DOTENV", "1")
 
+# `src.main` fails fast without ADMIN_API_KEY (src/admin_auth.py), so every test
+# that builds a TestClient over the real app needs one. It cannot come from the
+# developer's .env — the line above deliberately stops that file from loading —
+# so the suite has to supply its own or it only passes on a machine that happens
+# to export the variable. `setdefault` keeps a real value intact when one is set.
+os.environ.setdefault("ADMIN_API_KEY", "test-admin-api-key")
+
 import pytest
 
 import src.main as main
