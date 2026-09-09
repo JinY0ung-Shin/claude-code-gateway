@@ -120,6 +120,12 @@ class TestResponseInputToClaudeBlocks:
         assert [b["type"] for b in blocks] == ["image", "text"]
 
     def test_multiple_items_concatenate(self):
+        """Order is preserved and each message is attributed (issue #189).
+
+        More than one message means this is a replayed transcript, so a
+        ``"<Role>:"`` marker precedes each contributing message — blocks alone
+        cannot tell the model who said what.
+        """
         from src.response_models import ResponseInputItem
 
         items = [
@@ -130,8 +136,8 @@ class TestResponseInputToClaudeBlocks:
             ),
         ]
         blocks = MessageAdapter.response_input_to_claude_blocks(items)
-        assert [b["type"] for b in blocks] == ["text", "image"]
-        assert blocks[0]["text"] == "first"
+        assert [b["type"] for b in blocks] == ["text", "text", "text", "image"]
+        assert [b["text"] for b in blocks[:3]] == ["User:", "first", "User:"]
 
     def test_empty_image_url_skipped(self):
         from src.response_models import ResponseInputItem

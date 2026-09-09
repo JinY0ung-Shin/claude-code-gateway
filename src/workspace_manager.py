@@ -20,7 +20,13 @@ from src.constants import USER_WORKSPACES_DIR
 
 logger = logging.getLogger(__name__)
 
-_USER_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
+# The workspace key is the caller's WHOLE identity. ``@`` is allowed because the
+# identity header is routinely an email (the default header name is
+# ``X-User-Email``): keying on the localpart alone would map ``alice@a.com`` and
+# ``alice@b.com`` — two different principals — onto one directory. ``@`` is inert
+# as a path component (no traversal, no separator); containment is enforced
+# independently by the callers' root confinement.
+_USER_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._@-]{0,126}$")
 _BACKEND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
@@ -116,7 +122,7 @@ class WorkspaceManager:
             raise ValueError("User identifier must not be empty")
         if not _USER_PATTERN.match(user):
             raise ValueError(
-                f"Invalid user identifier: {user!r}. Must match ^[a-zA-Z0-9][a-zA-Z0-9._-]{{0,62}}$"
+                f"Invalid user identifier: {user!r}. Must match {_USER_PATTERN.pattern}"
             )
         return user
 

@@ -48,12 +48,29 @@ class TestSanitize:
             manager._sanitize("user/name")
         with pytest.raises(ValueError):
             manager._sanitize("user name")
-        with pytest.raises(ValueError):
-            manager._sanitize("user@name")
+
+    def test_accepts_an_email_identity_whole(self, manager):
+        """The identity header is routinely an email; the key is the whole thing.
+
+        Keying on the localpart collapsed distinct principals into one workspace
+        (issue #188), so ``@`` has to survive into the directory name.
+        """
+        assert manager._sanitize("alice@a.com") == "alice@a.com"
+        assert manager._sanitize("alice@b.com") == "alice@b.com"
+
+    def test_distinct_emails_sharing_a_localpart_get_distinct_workspaces(self, manager):
+        a = manager.resolve("alice@a.com", backend="claude")
+        b = manager.resolve("alice@b.com", backend="claude")
+        bare = manager.resolve("alice", backend="claude")
+
+        assert a != b != bare and a != bare
+        (a / "secret.txt").write_text("from a")
+        assert not (b / "secret.txt").exists()
+        assert not (bare / "secret.txt").exists()
 
     def test_rejects_too_long(self, manager):
         with pytest.raises(ValueError):
-            manager._sanitize("a" * 64)
+            manager._sanitize("a" * 128)
 
     def test_rejects_starting_with_non_alnum(self, manager):
         with pytest.raises(ValueError):

@@ -43,8 +43,12 @@ def client(workspace, monkeypatch):
     _patch_api_key(monkeypatch, "testkey")
 
     def _resolve(user, backend=None):
-        if user == "alice":
+        # The route keys the workspace on the WHOLE identity (issue #188), so the
+        # fake resolver is keyed the same way.
+        if user == "alice@corp.com":
             return workspace
+        if user == "alice":
+            return workspace.parent.parent / "legacy-localpart" / "claude"
         raise ValueError("bad user")
 
     monkeypatch.setattr(tf.workspace_manager, "resolve", _resolve)
@@ -55,7 +59,8 @@ def client(workspace, monkeypatch):
 
 
 _AUTH = {"Authorization": "Bearer testkey"}
-# Default identity header (WORKSPACE_USER_HEADER); we key off the localpart.
+# Default identity header (WORKSPACE_USER_HEADER). The value keys the workspace
+# whole — no localpart truncation (issue #188).
 _USER = {"X-User-Email": "alice@corp.com"}
 
 
@@ -164,6 +169,63 @@ def test_invalid_user_is_rejected(client):
         headers={**_AUTH, "X-User-Email": "../evil@x.com"},
     )
     assert r.status_code in (400, 403)
+
+
+def test_identity_is_not_truncated_at_the_at_sign(workspace, monkeypatch):
+    """Two principals sharing a localpart must not share a workspace.
+
+    Before issue #188 the workspace key was ``identity.split("@")[0]``, so
+    ``alice@a.com`` could list, read, overwrite and delete ``alice@b.com``'s
+    files. The whole identity is the key now.
+    """
+    _patch_api_key(monkeypatch, "testkey")
+    roots = {}
+
+    def _resolve(user, backend=None):
+        root = workspace.parent.parent / user / (backend or "")
+        root.mkdir(parents=True, exist_ok=True)
+        roots[user] = root
+        return root
+
+    monkeypatch.setattr(tf.workspace_manager, "resolve", _resolve)
+    app = FastAPI()
+    app.include_router(router)
+    c = TestClient(app)
+
+    up = c.post(
+        "/files/upload",
+        headers={**_AUTH, "X-User-Email": "alice@a.com"},
+        data={"path": "/"},
+        files={"file": ("secret.txt", b"from a", "text/plain")},
+    )
+    assert up.status_code == 200
+
+    listed = c.get(
+        "/files/list?directory=/", headers={**_AUTH, "X-User-Email": "alice@b.com"}
+    )
+    assert listed.status_code == 200
+    assert [e["name"] for e in listed.json()["entries"]] == []
+
+    read = c.get(
+        "/files/read?path=/secret.txt", headers={**_AUTH, "X-User-Email": "alice@b.com"}
+    )
+    assert read.status_code == 404
+    assert roots["alice@a.com"] != roots["alice@b.com"]
+
+
+def test_legacy_localpart_key_is_opt_in(client, monkeypatch, workspace):
+    """The old truncating key stays reachable only behind an explicit switch."""
+    legacy = workspace.parent.parent / "legacy-localpart" / "claude"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "only-in-legacy.txt").write_text("x")
+
+    default = client.get("/files/list?directory=/", headers={**_AUTH, **_USER})
+    assert "only-in-legacy.txt" not in [e["name"] for e in default.json()["entries"]]
+
+    monkeypatch.setenv("WORKSPACE_LEGACY_LOCALPART_KEY", "true")
+    switched = client.get("/files/list?directory=/", headers={**_AUTH, **_USER})
+    assert switched.status_code == 200
+    assert [e["name"] for e in switched.json()["entries"]] == ["only-in-legacy.txt"]
 
 
 def test_custom_user_header_name(client, monkeypatch):
@@ -869,7 +931,7 @@ def guarded_client(workspace, monkeypatch):
     _patch_api_key(monkeypatch, "testkey")
 
     def _resolve(user, backend=None):
-        if user == "alice":
+        if user == "alice@corp.com":
             return workspace
         raise ValueError("bad user")
 
