@@ -185,6 +185,19 @@ class MessageAdapter:
         return str(role or "user")
 
     @staticmethod
+    def _item_role_label(item) -> Optional[str]:
+        """Return a trusted replay label, or ``None`` for an unknown role.
+
+        ResponseInputItem currently constrains roles to the four entries in
+        ``_ROLE_LABELS``, but this adapter also accepts duck-typed items in tests
+        and internal callers. If that boundary ever widens, treating an unknown
+        speaker (for example ``tool``) as ``User`` would fabricate attribution.
+        Preserve the content instead and omit a label until the role is explicitly
+        supported.
+        """
+        return MessageAdapter._ROLE_LABELS.get(MessageAdapter._item_role(item))
+
+    @staticmethod
     def _needs_role_labels(input_data) -> bool:
         """True when the array holds more than one *message* item."""
         if isinstance(input_data, str):
@@ -206,9 +219,10 @@ class MessageAdapter:
         (OpenAI Responses API format).
 
         A single message (and a bare string) collapses to its text unchanged. A
-        **multi-message** array is a replayed transcript, so each message is
-        prefixed with ``"<Role>: "`` — without it the model receives its own
-        previous answers as if the user had typed them.
+        **multi-message** array is a replayed transcript, so each supported message
+        role is prefixed with ``"<Role>: "`` — without it the model receives its
+        own previous answers as if the user had typed them. Unknown roles retain
+        their content without inventing a speaker label.
         """
         if isinstance(input_data, str):
             return input_data
@@ -251,10 +265,9 @@ class MessageAdapter:
                 continue
 
             if label_roles:
-                role = MessageAdapter._ROLE_LABELS.get(
-                    MessageAdapter._item_role(item), "User"
-                )
-                text = f"{role}: {text}"
+                role_label = MessageAdapter._item_role_label(item)
+                if role_label:
+                    text = f"{role_label}: {text}"
             parts.append(text)
 
         return "\n\n".join(parts)
@@ -273,7 +286,8 @@ class MessageAdapter:
         A single message (and a bare string) is emitted with no added text —
         content blocks are already structurally delimited. A **multi-message**
         array is a replayed transcript, and blocks alone cannot say who spoke,
-        so each contributing message is preceded by a ``"<Role>:"`` text block.
+        so each contributing message with a supported role is preceded by a
+        ``"<Role>:"`` text block. Unknown roles keep their content unlabelled.
 
         Raises ``ValueError`` for invalid image payloads (non-``data:`` URL,
         unsupported media type, malformed base64, oversize).
@@ -316,12 +330,12 @@ class MessageAdapter:
 
             # The role marker is its own leading text block, added only when the
             # message actually contributes content, so an empty or fully-filtered
-            # message never leaves a dangling speaker label behind.
+            # message never leaves a dangling speaker label behind. Unknown roles
+            # deliberately get no marker rather than being misattributed as User.
             if label_roles and parts:
-                role = MessageAdapter._ROLE_LABELS.get(
-                    MessageAdapter._item_role(item), "User"
-                )
-                blocks.append({"type": "text", "text": f"{role}:"})
+                role_label = MessageAdapter._item_role_label(item)
+                if role_label:
+                    blocks.append({"type": "text", "text": f"{role_label}:"})
             blocks.extend(parts)
 
         # Apply the same content filtering the string path gets, per text block.
