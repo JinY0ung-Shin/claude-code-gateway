@@ -1929,7 +1929,10 @@ def test_session_endpoints_and_http_exception_handler():
     session_obj = MagicMock()
     session_obj.to_session_info.return_value = session_info
 
-    def fake_get_session(session_id):
+    # Both the GET and the DELETE route look the session up with
+    # `peek_session`, not `get_session`: peeking must not touch a foreign
+    # tenant's TTL before the visibility check has run.
+    def fake_peek_session(session_id):
         if session_id == "demo-session":
             return session_obj
         return None
@@ -1946,7 +1949,7 @@ def test_session_endpoints_and_http_exception_handler():
             return_value={"active_sessions": 1, "expired_sessions": 0, "total_messages": 2},
         ),
         patch.object(main.session_manager, "list_sessions", return_value=[session_info]),
-        patch.object(main.session_manager, "get_session", side_effect=fake_get_session),
+        patch.object(main.session_manager, "peek_session", side_effect=fake_peek_session),
         patch.object(
             main.session_manager,
             "delete_session_async",
