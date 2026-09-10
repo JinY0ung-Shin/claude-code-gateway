@@ -23,14 +23,27 @@ Contract (what FileNav calls):
 - ``POST /files/archive`` {paths}     -> zip stream
 
 Identity: read from a configurable, vendor-neutral header (``WORKSPACE_USER_HEADER``,
-default ``X-User-Email``) and take its localpart — the same value the pipe uses to
-key ``/v1/responses`` workspaces — so the explorer resolves the very files the
-agent wrote. The caller (e.g. open-webui) forwards the user's identity under that
-header name; on open-webui set ``FORWARD_USER_INFO_HEADER_USER_EMAIL`` to the same
-name so the two agree (no code coupling to the caller's product).
+default ``X-User-Email``) and used WHOLE — the same value ``/v1/responses`` keys its
+workspace on — so the explorer resolves the very files the agent wrote. The caller
+(e.g. open-webui) forwards the user's identity under that header name; on open-webui
+set ``FORWARD_USER_INFO_HEADER_USER_EMAIL`` to the same name so the two agree (no code
+coupling to the caller's product).
+
+This router used to key the workspace on the identity's *localpart* (everything
+before ``@``). That collapsed distinct principals: ``alice@a.com``, ``alice@b.com``
+and bare ``alice`` are three identities and were one directory, so any of them could
+list, read, overwrite and delete the others' files, and ``/v1/agent-resources``
+reported the others' private skills and subagents. It also disagreed with
+``/v1/responses``, which never truncated — the file browser and the agent could end
+up in different workspaces for one and the same caller. The whole identity is now
+the key. Set ``WORKSPACE_LEGACY_LOCALPART_KEY=true`` to restore the old truncation
+while migrating an existing deployment's directories; it re-opens the collision, so
+it logs a warning on every resolve.
 
 Config:
 - ``WORKSPACE_USER_HEADER`` — inbound identity header name (default ``X-User-Email``).
+- ``WORKSPACE_LEGACY_LOCALPART_KEY`` — when true, key the workspace on the identity's
+  localpart as releases before this one did. Insecure (see above); migration only.
 - ``WORKSPACE_HIDE_DOTFILES`` — when true, dot-prefixed entries are neither
   listed nor accessible. Default **false**: hiding is a presentation choice that
   belongs to the client rendering the tree, and hiding them here also blocks
@@ -58,6 +71,7 @@ import ctypes
 import errno
 import hashlib
 import io
+import logging
 import mimetypes
 import os
 import shutil
@@ -75,6 +89,8 @@ from pydantic import BaseModel
 from src.auth import auth_manager, security, verify_api_key
 from src.constants import MAX_REQUEST_SIZE, WORKSPACE_UPLOAD_MAX_BYTES
 from src.workspace_manager import workspace_manager
+
+logger = logging.getLogger(__name__)
 
 
 class _PathBody(BaseModel):
@@ -103,9 +119,9 @@ _MAX_READ_BYTES = 5 * 1024 * 1024
 
 # Name of the inbound header carrying the user identity. Kept generic and
 # configurable (no hard dependency on the caller's product) — the frontend just
-# has to forward the user's identity under this name. Its value is treated as an
-# email/identity whose localpart (before '@') keys the workspace, matching how
-# the pipe derives body.user. Default is deliberately vendor-neutral.
+# has to forward the user's identity under this name. Its value keys the workspace
+# WHOLE, matching how ``/v1/responses`` keys ``body.user``. Default is deliberately
+# vendor-neutral.
 _DEFAULT_USER_HEADER = "X-User-Email"
 
 # Room for the multipart envelope around the file bytes: boundary lines, the
@@ -162,11 +178,33 @@ def _ensure_api_key() -> None:
         )
 
 
-def _require_user(request: Request) -> str:
-    # Workspace key = identity localpart (strip from '@'), matching how the pipe
-    # derives body.user. Falls back to the raw value when there is no '@'.
+def _legacy_localpart_key() -> bool:
+    """Opt back into the pre-fix localpart workspace key (migration only).
+
+    Truncating the identity at ``@`` maps every principal sharing a localpart onto
+    one workspace, so this is a known cross-user isolation hole. It stays reachable
+    only so an existing deployment can stage a directory migration, and it says so
+    on every resolve rather than failing quietly into the old behaviour.
+    """
+    if os.getenv("WORKSPACE_LEGACY_LOCALPART_KEY", "").strip().lower() != "true":
+        return False
+    logger.warning(
+        "WORKSPACE_LEGACY_LOCALPART_KEY=true: workspaces are keyed on the identity "
+        "localpart, so callers sharing one localpart share one workspace"
+    )
+    return True
+
+
+def _workspace_key(request: Request) -> str:
+    """The caller's identity as the workspace key ("" when the header is absent)."""
     identity = (request.headers.get(_user_header()) or "").strip()
-    user = identity.split("@")[0]
+    if _legacy_localpart_key():
+        return identity.split("@")[0]
+    return identity
+
+
+def _require_user(request: Request) -> str:
+    user = _workspace_key(request)
     if not user:
         raise HTTPException(status_code=400, detail="missing user identity header")
     return user
@@ -187,8 +225,7 @@ def resolve_workspace_for_request(request: Request) -> Optional[Path]:
     catalog) should degrade to "no project scope" rather than 400 when the
     header is absent. Never creates the directory.
     """
-    identity = (request.headers.get(_user_header()) or "").strip()
-    user = identity.split("@")[0]
+    user = _workspace_key(request)
     if not user:
         return None
     try:

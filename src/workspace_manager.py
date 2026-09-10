@@ -8,6 +8,7 @@ seeded into the workspace here.
 """
 
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -20,8 +21,27 @@ from src.constants import USER_WORKSPACES_DIR
 
 logger = logging.getLogger(__name__)
 
-_USER_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
+# The workspace key is the caller's WHOLE identity. ``@`` is allowed because the
+# identity header is routinely an email (the default header name is
+# ``X-User-Email``): keying on the localpart alone would map ``alice@a.com`` and
+# ``alice@b.com`` — two different principals — onto one directory. ``@`` is inert
+# as a path component (no traversal, no separator); containment is enforced
+# independently by the callers' root confinement.
+_USER_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._@-]{0,126}$")
 _BACKEND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def _legacy_localpart_key_enabled() -> bool:
+    """Whether all named workspace consumers should use the pre-fix localpart key.
+
+    This compatibility switch is intentionally resolved here, at the single
+    workspace-path authority. Applying it only in ``/files/*`` would make the file
+    browser use ``alice`` while ``/v1/responses`` used ``alice@example.com`` — the
+    same cross-surface split issue #188 fixed. The mode remains insecure because
+    different principals that share a localpart collide; it exists for migration
+    only and warns on every named resolve while enabled.
+    """
+    return os.getenv("WORKSPACE_LEGACY_LOCALPART_KEY", "").strip().lower() == "true"
 
 
 class WorkspaceManager:
@@ -44,10 +64,23 @@ class WorkspaceManager:
         Named users use ``base_path/user/backend`` when *backend* is provided.
         Anonymous workspaces remain session-scoped ``_tmp_{uuid}`` directories.
         Workspaces are created empty — no configuration is seeded into them.
+
+        ``WORKSPACE_LEGACY_LOCALPART_KEY=true`` is a migration-only compatibility
+        mode. It is applied here rather than in an HTTP route so every consumer
+        (Responses, file routes, agent resources, and direct manager users) resolves
+        the same workspace key.
         """
         backend_name = self._sanitize_backend(backend)
         if user is not None:
-            sanitized = self._sanitize(user)
+            workspace_key = user
+            if _legacy_localpart_key_enabled():
+                workspace_key = user.split("@", 1)[0]
+                logger.warning(
+                    "WORKSPACE_LEGACY_LOCALPART_KEY=true: workspaces are keyed on "
+                    "the identity localpart, so callers sharing one localpart share "
+                    "one workspace"
+                )
+            sanitized = self._sanitize(workspace_key)
             workspace = self.base_path / sanitized
             if backend_name:
                 workspace = workspace / backend_name
@@ -61,7 +94,6 @@ class WorkspaceManager:
         """Remove a temporary workspace directory.
 
         Only directories whose name starts with ``_tmp_`` are removed.
-        Permanent user workspaces are left untouched.
         """
         if not workspace.exists():
             return
@@ -116,7 +148,7 @@ class WorkspaceManager:
             raise ValueError("User identifier must not be empty")
         if not _USER_PATTERN.match(user):
             raise ValueError(
-                f"Invalid user identifier: {user!r}. Must match ^[a-zA-Z0-9][a-zA-Z0-9._-]{{0,62}}$"
+                f"Invalid user identifier: {user!r}. Must match {_USER_PATTERN.pattern}"
             )
         return user
 

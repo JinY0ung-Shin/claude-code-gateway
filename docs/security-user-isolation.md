@@ -10,7 +10,7 @@ Set `USER_API_KEYS` to a JSON object mapping the gateway user/workspace id to it
 export USER_API_KEYS='{"alice":"replace-with-a-long-random-key","bob":"replace-with-another-key"}'
 ```
 
-User ids must match `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`, the same constraint used by persistent workspace paths. Duplicate or malformed entries fail fast at startup.
+User ids must match `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`. Workspace paths accept a slightly wider set (`@` and up to 127 characters, so an email identity can key a workspace whole — see below), but an operator-configured id is deliberately held to the narrower shape. Duplicate or malformed entries fail fast at startup.
 
 `API_KEY` may still be configured at the same time. It remains a **legacy unscoped service key** for backward compatibility: requests authenticated with `API_KEY` retain the historical ability to act across users. Treat it as an operator credential and do not distribute it to tenant users.
 
@@ -26,6 +26,35 @@ When a bearer token matches `USER_API_KEYS`, the gateway derives the user from t
 - per-user turn concurrency: `MAX_CONCURRENT_TURNS_PER_USER` uses the credential-derived identity instead of a caller-controlled body field.
 
 This means changing `user`, the workspace identity header, or the `user` query parameter cannot move a user-scoped credential into another tenant's workspace/session.
+
+## Workspace identity is used whole
+
+The workspace key is the **entire** identity — `body.user` for `/v1/responses`, the
+`WORKSPACE_USER_HEADER` value for `/files/*` and `GET /v1/agent-resources`. It is not
+truncated, so `alice@a.com`, `alice@b.com` and bare `alice` are three principals with
+three workspaces.
+
+Releases before this one keyed the file routes on the identity's *localpart* (everything
+before `@`). Any two identities sharing a localpart then shared one workspace: each could
+list, read, overwrite and delete the others' files, and `/v1/agent-resources` reported the
+others' private skills and subagents. The same truncation also made the file browser and
+the agent disagree about which workspace they were in for one and the same caller, because
+`/v1/responses` never truncated.
+
+`WORKSPACE_LEGACY_LOCALPART_KEY=true` restores the old truncating key so an existing
+deployment can stage a directory migration. The switch is resolved by the shared
+`WorkspaceManager`, so while it is enabled **all** workspace consumers — `/v1/responses`,
+`/files/*`, agent resources, and other direct resolver users — land on the same legacy
+path. This avoids reintroducing the old file-browser-vs-agent split, but it still re-opens
+the cross-user collision described above and logs a warning on every named resolve. Leave
+it unset except during a controlled migration window.
+
+If you are upgrading a deployment whose identities contain `@`, the on-disk directory for
+those users changes from `<localpart>/` to `<full-identity>/`. Prefer renaming the
+directories before pointing traffic at the new build. If a staged migration is unavoidable,
+the legacy switch may be used temporarily; because it deliberately collapses principals
+sharing a localpart, restrict access during that window and disable it as soon as the
+filesystem move is complete.
 
 ## Workspace file browser note
 

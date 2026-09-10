@@ -230,8 +230,16 @@ def test_agent_resources_endpoint_scopes_to_the_caller_workspace(tmp_path, monke
 
     monkeypatch.setattr("src.admin_auth.ADMIN_API_KEY", "test-key")
     monkeypatch.setenv("USER_WORKSPACES_DIR", str(tmp_path))
+    # The workspace is keyed on the WHOLE identity header, not its localpart
+    # (issue #188), so the catalog of "kyu@corp.example" lives under that name.
     _write(
-        tmp_path / "kyu" / "claude" / ".claude" / "skills" / "deep-research" / "SKILL.md",
+        tmp_path
+        / "kyu@corp.example"
+        / "claude"
+        / ".claude"
+        / "skills"
+        / "deep-research"
+        / "SKILL.md",
         "---\nname: deep-research\ndescription: sweep\n---\n",
     )
     from src import workspace_manager as ws
@@ -245,6 +253,28 @@ def test_agent_resources_endpoint_scopes_to_the_caller_workspace(tmp_path, monke
     body = res.json()
     assert body["workspace_scoped"] is True
     assert [s["name"] for s in body["skills"] if s["source"] == "project"] == ["deep-research"]
+
+
+def test_agent_resources_does_not_leak_across_a_shared_localpart(tmp_path, monkeypatch):
+    """Two identities sharing a localpart are two catalogs (issue #188)."""
+    from tests.test_main_api_unit import client_context
+
+    monkeypatch.setattr("src.admin_auth.ADMIN_API_KEY", "test-key")
+    monkeypatch.setenv("USER_WORKSPACES_DIR", str(tmp_path))
+    _write(
+        tmp_path / "kyu@a.example" / "claude" / ".claude" / "skills" / "private" / "SKILL.md",
+        "---\nname: private\ndescription: only mine\n---\n",
+    )
+    from src import workspace_manager as ws
+
+    monkeypatch.setattr(ws.workspace_manager, "base_path", tmp_path)
+
+    with client_context() as (client, _cli):
+        mine = client.get("/v1/agent-resources", headers={"X-User-Email": "kyu@a.example"})
+        theirs = client.get("/v1/agent-resources", headers={"X-User-Email": "kyu@b.example"})
+
+    assert [s["name"] for s in mine.json()["skills"] if s["source"] == "project"] == ["private"]
+    assert [s["name"] for s in theirs.json()["skills"] if s["source"] == "project"] == []
 
 
 def test_agent_resources_without_identity_header_reports_no_project_scope(monkeypatch):

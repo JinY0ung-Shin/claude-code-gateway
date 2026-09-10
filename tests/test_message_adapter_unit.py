@@ -219,6 +219,11 @@ class TestResponseInputToPrompt:
         assert MessageAdapter.response_input_to_prompt("plain input") == "plain input"
 
     def test_array_input_joins_text_and_skips_empty_items(self):
+        """A multi-message array keeps the speakers; empty items still drop out.
+
+        The array is a replayed transcript. Without the role prefix the model
+        receives its own previous answer as user input (issue #189).
+        """
         items = [
             ResponseInputItem(role="user", content="First"),
             ResponseInputItem(
@@ -235,4 +240,57 @@ class TestResponseInputToPrompt:
 
         prompt = MessageAdapter.response_input_to_prompt(items)
 
-        assert prompt == "First\n\nSecond line\nThird line"
+        assert prompt == "User: First\n\nAssistant: Second line\nThird line"
+
+    def test_single_message_array_is_unlabelled(self):
+        """One message needs no attribution — every single-turn caller is unchanged."""
+        items = [ResponseInputItem(role="user", content="Only one")]
+
+        assert MessageAdapter.response_input_to_prompt(items) == "Only one"
+
+    def test_replayed_transcript_attributes_every_turn(self):
+        items = [
+            ResponseInputItem(role="user", content="remember BANANA"),
+            ResponseInputItem(role="assistant", content="Noted: BANANA"),
+            ResponseInputItem(role="user", content="what was it?"),
+        ]
+
+        prompt = MessageAdapter.response_input_to_prompt(items)
+
+        assert prompt == (
+            "User: remember BANANA\n\nAssistant: Noted: BANANA\n\nUser: what was it?"
+        )
+
+    def test_blocks_label_speakers_only_for_a_transcript(self):
+        solo = [ResponseInputItem(role="user", content="solo")]
+        assert MessageAdapter.response_input_to_claude_blocks(solo) == [
+            {"type": "text", "text": "solo"}
+        ]
+
+        transcript = [
+            ResponseInputItem(role="user", content="A"),
+            ResponseInputItem(role="assistant", content="B"),
+        ]
+        assert MessageAdapter.response_input_to_claude_blocks(transcript) == [
+            {"type": "text", "text": "User:"},
+            {"type": "text", "text": "A"},
+            {"type": "text", "text": "Assistant:"},
+            {"type": "text", "text": "B"},
+        ]
+
+    def test_blocks_never_leave_a_dangling_speaker_label(self):
+        """A message whose content filters away contributes no label either."""
+        items = [
+            ResponseInputItem(role="user", content="A"),
+            ResponseInputItem(role="assistant", content=""),
+            ResponseInputItem(role="user", content="B"),
+        ]
+
+        blocks = MessageAdapter.response_input_to_claude_blocks(items)
+
+        assert blocks == [
+            {"type": "text", "text": "User:"},
+            {"type": "text", "text": "A"},
+            {"type": "text", "text": "User:"},
+            {"type": "text", "text": "B"},
+        ]
